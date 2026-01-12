@@ -3,6 +3,7 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
+from uuid import uuid4
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +16,7 @@ import structlog
 from app.config import settings
 from app.database import init_db, close_db
 from app.api import api_router
+from app.middleware.security import SecurityHeadersMiddleware
 
 # Configure Python logging to use stdout/stderr
 logging.basicConfig(
@@ -102,13 +104,18 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Configure CORS
+# Add security headers middleware (must be added before CORS)
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Configure CORS with explicit methods and headers (no wildcards)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=settings.cors_methods_list,  # Explicit methods, not "*"
+    allow_headers=settings.cors_headers_list,  # Explicit headers, not "*"
+    expose_headers=["X-Request-ID"],  # Headers client can access
+    max_age=600,  # Cache preflight requests for 10 minutes
 )
 
 
@@ -141,30 +148,35 @@ async def log_requests(request: Request, call_next):
 # Global exception handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Handle unexpected exceptions."""
-    import sys
+    """Handle unexpected exceptions securely."""
     import traceback
     
-    error_id = datetime.utcnow().isoformat()
+    # Generate a unique error ID for correlation (don't expose timestamp)
+    error_id = str(uuid4())[:8]
     
-    # Print to stderr for Railway logs
-    print(f"[ERROR {error_id}] Unhandled exception in {request.method} {request.url.path}", file=sys.stderr, flush=True)
-    print(f"[ERROR {error_id}] {type(exc).__name__}: {str(exc)}", file=sys.stderr, flush=True)
-    print(f"[ERROR {error_id}] Traceback:\n{traceback.format_exc()}", file=sys.stderr, flush=True)
-    
+    # Log full details server-side only
     logger.error(
         "Unhandled exception",
+        error_id=error_id,
         path=request.url.path,
         method=request.method,
-        error=str(exc),
-        exc_info=True,
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+        client_ip=request.client.host if request.client else None,
     )
     
+    # Print to stderr for Railway logs (full details for debugging)
+    print(f"[ERROR {error_id}] {request.method} {request.url.path}", file=sys.stderr, flush=True)
+    print(f"[ERROR {error_id}] {type(exc).__name__}: {str(exc)}", file=sys.stderr, flush=True)
+    if settings.DEBUG:
+        print(f"[ERROR {error_id}] Traceback:\n{traceback.format_exc()}", file=sys.stderr, flush=True)
+    
+    # Return generic error to client (don't leak internal details)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
-            "detail": "An unexpected error occurred",
-            "error_id": error_id,
+            "detail": "An internal error occurred. Please try again later.",
+            "error_id": error_id,  # Allow user to report this ID
         },
     )
 

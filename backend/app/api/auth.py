@@ -3,6 +3,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
+import structlog
 
 from app.database import get_db
 from app.models.user import User
@@ -12,9 +13,11 @@ from app.schemas.user import (
     Token, PasswordChange
 )
 from app.services.auth import AuthService
+from app.services.rate_limit import login_rate_limiter
 from app.api.deps import get_current_active_user
 from app.config import settings
 
+logger = structlog.get_logger()
 router = APIRouter()
 
 
@@ -64,11 +67,57 @@ async def login(
     db: AsyncSession = Depends(get_db),
 ):
     """Authenticate user and return JWT tokens."""
+    client_ip = request.client.host if request.client else None
+    
+    # Check if account is locked due to too many failed attempts
+    is_locked, seconds_remaining = await login_rate_limiter.is_locked(
+        login_data.email, client_ip
+    )
+    if is_locked:
+        logger.warning(
+            "Login attempt on locked account",
+            email=login_data.email,
+            ip=client_ip,
+            seconds_remaining=seconds_remaining,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Account temporarily locked. Try again in {seconds_remaining} seconds.",
+            headers={"Retry-After": str(seconds_remaining)},
+        )
+    
+    # Attempt authentication
     user = await AuthService.authenticate_user(
         db, login_data.email, login_data.password
     )
     
     if not user:
+        # Record failed attempt
+        is_now_locked, attempts_remaining = await login_rate_limiter.record_failed_attempt(
+            login_data.email, client_ip
+        )
+        
+        # Create failed login audit log
+        audit_log = AuditLog(
+            action=AuditAction.LOGIN,
+            description=f"Failed login attempt - {'account locked' if is_now_locked else f'{attempts_remaining} attempts remaining'}",
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent"),
+            endpoint=str(request.url.path),
+            method=request.method,
+            details={"email": login_data.email, "locked": is_now_locked},
+        )
+        db.add(audit_log)
+        await db.commit()
+        
+        if is_now_locked:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many failed attempts. Account locked for {settings.LOGIN_LOCKOUT_MINUTES} minutes.",
+                headers={"Retry-After": str(settings.LOGIN_LOCKOUT_MINUTES * 60)},
+            )
+        
+        # Use constant-time comparison message to prevent user enumeration
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -79,6 +128,9 @@ async def login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive",
         )
+    
+    # Successful login - clear any failed attempts
+    await login_rate_limiter.record_successful_login(login_data.email, client_ip)
     
     # Update last login
     await AuthService.update_last_login(db, user)
@@ -93,8 +145,8 @@ async def login(
     audit_log = AuditLog(
         user_id=user.id,
         action=AuditAction.LOGIN,
-        description="User logged in",
-        ip_address=request.client.host if request.client else None,
+        description="User logged in successfully",
+        ip_address=client_ip,
         user_agent=request.headers.get("user-agent"),
         endpoint=str(request.url.path),
         method=request.method,

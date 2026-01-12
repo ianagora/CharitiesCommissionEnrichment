@@ -19,6 +19,7 @@ from app.services.entity_resolver import EntityResolverService
 from app.services.ownership_builder import OwnershipTreeBuilder
 from app.api.deps import get_current_active_user
 from app.config import settings
+from app.utils.file_validation import validate_upload_file
 import structlog
 
 logger = structlog.get_logger()
@@ -88,11 +89,17 @@ async def create_batch(
     # Read file content
     content = await file.read()
     
-    # Check file size
-    if len(content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
+    # Comprehensive file validation (extension, size, magic bytes, dangerous content)
+    is_valid, error = await validate_upload_file(
+        content=content,
+        filename=file.filename,
+        allowed_extensions=settings.allowed_extensions_list,
+        max_size_mb=settings.MAX_UPLOAD_SIZE_MB,
+    )
+    if not is_valid:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File too large. Maximum size: {settings.MAX_UPLOAD_SIZE_MB}MB",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error,
         )
     
     # Parse file
