@@ -633,11 +633,18 @@ Be conservative - only match if confident it's the same organization."""
                 parsed = CharityCommissionService.parse_charity_data(charity_data)
                 await self._update_entity_from_charity(entity, parsed, "manual_confirm", 1.0)
                 entity.resolution_status = ResolutionStatus.CONFIRMED
+            else:
+                # Charity number provided but no data found - still confirm with the number
+                entity.charity_number = charity_num
+                entity.resolution_status = ResolutionStatus.CONFIRMED
+                entity.resolution_method = "manual_confirm"
+                entity.resolution_confidence = 1.0
+                entity.resolved_at = datetime.utcnow()
         else:
             # Mark as rejected/no match
             entity.resolution_status = ResolutionStatus.REJECTED
             entity.resolved_at = datetime.utcnow()
         
         await self.db.flush()
-        await self.close()
+        # Note: caller should handle closing resources
         return entity
