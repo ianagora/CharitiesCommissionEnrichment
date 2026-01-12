@@ -10,7 +10,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils.dataframe import dataframe_to_rows
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+# selectinload removed - using separate query for entities (dynamic relationship)
 
 from app.models.entity import Entity, EntityBatch, EntityOwnership, EntityResolution
 import structlog
@@ -57,10 +57,9 @@ class ExportService:
         Returns:
             Excel file as bytes
         """
-        # Get batch with entities
+        # Get batch (without eager loading entities - dynamic relationship)
         result = await self.db.execute(
             select(EntityBatch)
-            .options(selectinload(EntityBatch.entities))
             .where(EntityBatch.id == batch_id)
         )
         batch = result.scalar_one_or_none()

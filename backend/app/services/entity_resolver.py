@@ -350,6 +350,9 @@ Be conservative - only match if confident it's the same organization."""
             debug_log("AI matching requested but OpenAI not configured (no API key)", batch_id=batch_id, entity_name=entity_name)
         
         # Multiple candidates, needs manual review
+        # Store the best match's confidence so user knows how close we got
+        best_candidate_score = candidates[0]["similarity_score"] if candidates else None
+        
         if len(candidates) > 1:
             debug_log(f"Multiple candidates ({len(candidates)}), no confident match - marking MULTIPLE_MATCHES", 
                      batch_id=batch_id, entity_name=entity_name)
@@ -359,6 +362,9 @@ Be conservative - only match if confident it's the same organization."""
                      batch_id=batch_id, entity_name=entity_name)
             entity.resolution_status = ResolutionStatus.MANUAL_REVIEW
         
+        # Store the best candidate's confidence score for user reference
+        entity.resolution_confidence = best_candidate_score
+        entity.resolution_method = "needs_review"
         entity.resolved_at = datetime.utcnow()
         await self.db.flush()
         debug_log(f"Resolution complete: status={entity.resolution_status}", batch_id=batch_id, entity_name=entity_name)
