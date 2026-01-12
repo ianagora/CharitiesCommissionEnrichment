@@ -507,14 +507,15 @@ async function loadEntities(batchId, page = 1, status = '', search = '') {
                     ${entity.resolution_confidence ? Math.round(entity.resolution_confidence * 100) + '%' : '-'}
                 </td>
                 <td class="px-4 py-3">
-                    <button onclick="showEntityDetail('${entity.id}')" class="text-blue-600 hover:text-blue-700 mr-2">
-                        <i class="fas fa-eye"></i>
-                    </button>
                     ${entity.resolution_status === 'multiple_matches' || entity.resolution_status === 'manual_review' ? `
-                        <button onclick="showResolutions('${entity.id}')" class="text-purple-600 hover:text-purple-700">
-                            <i class="fas fa-check-double"></i>
+                        <button onclick="showResolutions('${entity.id}')" class="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1 rounded text-sm">
+                            <i class="fas fa-search mr-1"></i>Review Matches
                         </button>
-                    ` : ''}
+                    ` : `
+                        <button onclick="showEntityDetail('${entity.id}')" class="text-blue-600 hover:text-blue-700">
+                            <i class="fas fa-eye mr-1"></i>View
+                        </button>
+                    `}
                 </td>
             </tr>
         `).join('');
