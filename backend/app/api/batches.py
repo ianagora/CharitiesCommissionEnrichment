@@ -269,48 +269,100 @@ async def process_batch_background(
     """Background task to process a batch."""
     import traceback
     import sys
+    from datetime import datetime
     from app.database import get_db_context
     
-    print(f"[DEBUG] process_batch_background STARTED for batch_id={batch_id}", file=sys.stderr, flush=True)
-    logger.info("Background task started", batch_id=str(batch_id), use_ai=use_ai, build_ownership=build_ownership)
+    start_time = datetime.utcnow()
+    
+    # Log to both stdout and stderr for Railway visibility
+    def log(msg, level="DEBUG"):
+        timestamp = datetime.utcnow().isoformat()
+        formatted = f"[{level}] [{timestamp}] [batch={batch_id}] {msg}"
+        print(formatted, file=sys.stdout, flush=True)
+        print(formatted, file=sys.stderr, flush=True)
+    
+    log(f"=== BACKGROUND TASK STARTED ===")
+    log(f"Parameters: use_ai={use_ai}, build_ownership={build_ownership}, max_depth={max_depth}")
+    logger.info("Background task started", 
+                batch_id=str(batch_id), 
+                use_ai=use_ai, 
+                build_ownership=build_ownership,
+                max_depth=max_depth)
     
     try:
+        log("Acquiring database context...")
         async with get_db_context() as db:
-            print(f"[DEBUG] Got DB context for batch_id={batch_id}", file=sys.stderr, flush=True)
+            log("Database context acquired successfully")
+            
             try:
                 # Process entities
-                print(f"[DEBUG] Creating EntityResolverService", file=sys.stderr, flush=True)
+                log("Creating EntityResolverService...")
                 resolver = EntityResolverService(db)
+                log("EntityResolverService created")
                 
-                print(f"[DEBUG] Starting process_batch", file=sys.stderr, flush=True)
-                await resolver.process_batch(batch_id, use_ai=use_ai)
-                print(f"[DEBUG] process_batch completed", file=sys.stderr, flush=True)
+                log("Calling process_batch...")
+                batch = await resolver.process_batch(batch_id, use_ai=use_ai)
+                
+                duration = (datetime.utcnow() - start_time).total_seconds()
+                log(f"process_batch completed in {duration:.2f}s", level="INFO")
+                log(f"Final stats: total={batch.total_records}, processed={batch.processed_records}, matched={batch.matched_records}, failed={batch.failed_records}")
                 
                 # Build ownership trees if requested
                 if build_ownership:
-                    print(f"[DEBUG] Building ownership trees", file=sys.stderr, flush=True)
+                    log("Starting ownership tree building...")
                     builder = OwnershipTreeBuilder(db)
                     await builder.build_trees_for_batch(batch_id, max_depth=max_depth)
+                    log("Ownership trees completed")
                 
-                print(f"[DEBUG] Batch processing completed successfully", file=sys.stderr, flush=True)
-                logger.info("Batch processing completed", batch_id=str(batch_id))
+                log(f"=== BACKGROUND TASK COMPLETED SUCCESSFULLY ===", level="INFO")
+                logger.info("Batch processing completed", 
+                           batch_id=str(batch_id),
+                           duration_seconds=duration,
+                           total_records=batch.total_records,
+                           matched_records=batch.matched_records,
+                           failed_records=batch.failed_records,
+                           final_status=str(batch.status))
                 
             except Exception as e:
-                print(f"[DEBUG] ERROR in batch processing: {type(e).__name__}: {str(e)}", file=sys.stderr, flush=True)
-                print(f"[DEBUG] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
-                logger.error("Batch processing failed", batch_id=str(batch_id), error=str(e), traceback=traceback.format_exc())
+                duration = (datetime.utcnow() - start_time).total_seconds()
+                error_traceback = traceback.format_exc()
+                log(f"=== ERROR in batch processing after {duration:.2f}s ===", level="ERROR")
+                log(f"Exception type: {type(e).__name__}", level="ERROR")
+                log(f"Exception message: {str(e)}", level="ERROR")
+                log(f"Traceback:\n{error_traceback}", level="ERROR")
+                
+                logger.error("Batch processing failed", 
+                            batch_id=str(batch_id), 
+                            error=str(e), 
+                            error_type=type(e).__name__,
+                            duration_seconds=duration,
+                            traceback=error_traceback)
+                
                 # Update batch status to failed
-                result = await db.execute(select(EntityBatch).where(EntityBatch.id == batch_id))
-                batch = result.scalar_one_or_none()
-                if batch:
-                    batch.status = BatchStatus.FAILED
-                    batch.error_message = str(e)
-                    await db.commit()
-                    print(f"[DEBUG] Batch status updated to FAILED", file=sys.stderr, flush=True)
+                try:
+                    result = await db.execute(select(EntityBatch).where(EntityBatch.id == batch_id))
+                    batch = result.scalar_one_or_none()
+                    if batch:
+                        batch.status = BatchStatus.FAILED
+                        batch.error_message = f"{type(e).__name__}: {str(e)}"
+                        await db.commit()
+                        log("Batch status updated to FAILED")
+                except Exception as update_err:
+                    log(f"Failed to update batch status: {update_err}", level="ERROR")
+                    
     except Exception as outer_e:
-        print(f"[DEBUG] OUTER ERROR: {type(outer_e).__name__}: {str(outer_e)}", file=sys.stderr, flush=True)
-        print(f"[DEBUG] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
-        logger.error("Background task outer error", batch_id=str(batch_id), error=str(outer_e))
+        duration = (datetime.utcnow() - start_time).total_seconds()
+        error_traceback = traceback.format_exc()
+        log(f"=== OUTER ERROR (database/connection issue) after {duration:.2f}s ===", level="ERROR")
+        log(f"Exception type: {type(outer_e).__name__}", level="ERROR") 
+        log(f"Exception message: {str(outer_e)}", level="ERROR")
+        log(f"Traceback:\n{error_traceback}", level="ERROR")
+        
+        logger.error("Background task outer error", 
+                    batch_id=str(batch_id), 
+                    error=str(outer_e),
+                    error_type=type(outer_e).__name__,
+                    traceback=error_traceback)
 
 
 @router.post("/{batch_id}/process", response_model=EntityBatchResponse)

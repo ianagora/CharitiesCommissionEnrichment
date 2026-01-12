@@ -1,6 +1,8 @@
 """Entity resolution service using fuzzy matching and AI."""
 import asyncio
 import re
+import sys
+import traceback
 from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,6 +20,18 @@ from app.services.charity_commission import CharityCommissionService
 import structlog
 
 logger = structlog.get_logger()
+
+
+def debug_log(msg: str, batch_id: str = "", entity_name: str = "", level: str = "DEBUG"):
+    """Log debug messages to stdout/stderr for Railway visibility."""
+    timestamp = datetime.utcnow().isoformat()
+    context = ""
+    if batch_id:
+        context += f"[batch={batch_id}] "
+    if entity_name:
+        context += f"[entity='{entity_name[:30]}...'] " if len(entity_name) > 30 else f"[entity='{entity_name}'] "
+    formatted = f"[{level}] [{timestamp}] {context}{msg}"
+    print(formatted, file=sys.stdout, flush=True)
 
 
 class EntityResolverService:
@@ -206,38 +220,63 @@ Be conservative - only match if confident it's the same organization."""
         Returns:
             Updated entity
         """
+        entity_name = entity.original_name
+        batch_id = str(entity.batch_id) if entity.batch_id else ""
+        
+        debug_log("Starting resolution", batch_id=batch_id, entity_name=entity_name)
+        
         # First, check if entity already has a charity number
         if entity.charity_number:
+            debug_log(f"Entity has existing charity_number={entity.charity_number}, attempting direct lookup", 
+                     batch_id=batch_id, entity_name=entity_name)
             charity_data = await self.charity_service.get_full_charity_details(entity.charity_number)
             if charity_data:
+                debug_log(f"Direct lookup SUCCESS", batch_id=batch_id, entity_name=entity_name)
                 parsed = CharityCommissionService.parse_charity_data(charity_data)
                 await self._update_entity_from_charity(entity, parsed, "direct_lookup", 1.0)
                 return entity
+            else:
+                debug_log(f"Direct lookup returned no data", batch_id=batch_id, entity_name=entity_name)
         
         # Try to extract charity number from name or original data
+        debug_log("Attempting to extract charity number from name/data", batch_id=batch_id, entity_name=entity_name)
         extracted_number = CharityCommissionService.extract_charity_number(entity.original_name)
         if not extracted_number and entity.original_data:
-            for value in entity.original_data.values():
+            for key, value in entity.original_data.items():
                 if isinstance(value, str):
                     extracted_number = CharityCommissionService.extract_charity_number(value)
                     if extracted_number:
+                        debug_log(f"Found charity number in original_data['{key}']: {extracted_number}", 
+                                 batch_id=batch_id, entity_name=entity_name)
                         break
         
         if extracted_number:
+            debug_log(f"Extracted charity number: {extracted_number}, fetching details", 
+                     batch_id=batch_id, entity_name=entity_name)
             charity_data = await self.charity_service.get_full_charity_details(extracted_number)
             if charity_data:
+                debug_log(f"Number extraction lookup SUCCESS", batch_id=batch_id, entity_name=entity_name)
                 parsed = CharityCommissionService.parse_charity_data(charity_data)
                 await self._update_entity_from_charity(entity, parsed, "number_extraction", 0.95)
                 return entity
+            else:
+                debug_log(f"Number extraction lookup returned no data", batch_id=batch_id, entity_name=entity_name)
         
-        # Search for candidates
+        # Search for candidates by name
+        debug_log("Searching for candidates by name", batch_id=batch_id, entity_name=entity_name)
         candidates = await self.search_candidates(entity.original_name)
         
         if not candidates:
+            debug_log("No candidates found - marking as NO_MATCH", batch_id=batch_id, entity_name=entity_name)
             entity.resolution_status = ResolutionStatus.NO_MATCH
             entity.resolved_at = datetime.utcnow()
             await self.db.flush()
             return entity
+        
+        debug_log(f"Found {len(candidates)} candidates", batch_id=batch_id, entity_name=entity_name)
+        for i, c in enumerate(candidates[:3]):  # Log top 3
+            debug_log(f"  Candidate {i+1}: '{c['name']}' (#{c['charity_number']}) - similarity={c['similarity_score']:.3f}", 
+                     batch_id=batch_id, entity_name=entity_name)
         
         # Save all candidates as resolutions
         for candidate in candidates:
@@ -251,12 +290,14 @@ Be conservative - only match if confident it's the same organization."""
             )
             self.db.add(resolution)
         
-        # Check for exact match
+        # Check for exact match (high similarity)
         best_match = candidates[0]
         if best_match["similarity_score"] >= 0.95:
-            # High confidence fuzzy match
+            debug_log(f"High confidence match (score={best_match['similarity_score']:.3f} >= 0.95), fetching details", 
+                     batch_id=batch_id, entity_name=entity_name)
             charity_data = await self.charity_service.get_full_charity_details(best_match["charity_number"])
             if charity_data:
+                debug_log(f"Exact match SUCCESS: '{best_match['name']}'", batch_id=batch_id, entity_name=entity_name)
                 parsed = CharityCommissionService.parse_charity_data(charity_data)
                 await self._update_entity_from_charity(
                     entity, parsed, "exact_match", best_match["similarity_score"]
@@ -270,9 +311,12 @@ Be conservative - only match if confident it's the same organization."""
                     .values(is_selected=True)
                 )
                 return entity
+            else:
+                debug_log(f"Exact match lookup returned no data", batch_id=batch_id, entity_name=entity_name)
         
         # Try AI matching if enabled and we have multiple candidates
         if use_ai and self.openai_client:
+            debug_log("Attempting AI matching (OpenAI configured)", batch_id=batch_id, entity_name=entity_name)
             ai_result = await self.ai_resolve_entity(
                 entity.original_name,
                 candidates,
@@ -281,8 +325,11 @@ Be conservative - only match if confident it's the same organization."""
             
             if ai_result:
                 charity_number, confidence, reasoning = ai_result
+                debug_log(f"AI matched to #{charity_number} with confidence={confidence:.2f}: {reasoning[:50]}...", 
+                         batch_id=batch_id, entity_name=entity_name)
                 charity_data = await self.charity_service.get_full_charity_details(charity_number)
                 if charity_data:
+                    debug_log(f"AI match lookup SUCCESS", batch_id=batch_id, entity_name=entity_name)
                     parsed = CharityCommissionService.parse_charity_data(charity_data)
                     await self._update_entity_from_charity(entity, parsed, "ai_match", confidence)
                     entity.enriched_data = entity.enriched_data or {}
@@ -297,15 +344,24 @@ Be conservative - only match if confident it's the same organization."""
                         .values(is_selected=True)
                     )
                     return entity
+            else:
+                debug_log("AI matching did not produce a result", batch_id=batch_id, entity_name=entity_name)
+        elif use_ai:
+            debug_log("AI matching requested but OpenAI not configured (no API key)", batch_id=batch_id, entity_name=entity_name)
         
         # Multiple candidates, needs manual review
         if len(candidates) > 1:
+            debug_log(f"Multiple candidates ({len(candidates)}), no confident match - marking MULTIPLE_MATCHES", 
+                     batch_id=batch_id, entity_name=entity_name)
             entity.resolution_status = ResolutionStatus.MULTIPLE_MATCHES
         else:
+            debug_log(f"Single candidate but not confident enough - marking MANUAL_REVIEW", 
+                     batch_id=batch_id, entity_name=entity_name)
             entity.resolution_status = ResolutionStatus.MANUAL_REVIEW
         
         entity.resolved_at = datetime.utcnow()
         await self.db.flush()
+        debug_log(f"Resolution complete: status={entity.resolution_status}", batch_id=batch_id, entity_name=entity_name)
         return entity
     
     async def _update_entity_from_charity(
@@ -359,10 +415,11 @@ Be conservative - only match if confident it's the same organization."""
         Returns:
             Updated batch
         """
-        import sys
-        import traceback
+        batch_id_str = str(batch_id)
+        start_time = datetime.utcnow()
         
-        print(f"[DEBUG] EntityResolver.process_batch STARTED batch_id={batch_id}", file=sys.stderr, flush=True)
+        debug_log("=== EntityResolver.process_batch STARTED ===", batch_id=batch_id_str)
+        debug_log(f"Parameters: use_ai={use_ai}, max_concurrent={max_concurrent}", batch_id=batch_id_str)
         
         # Get batch
         result = await self.db.execute(
@@ -371,16 +428,16 @@ Be conservative - only match if confident it's the same organization."""
         batch = result.scalar_one_or_none()
         
         if not batch:
-            print(f"[DEBUG] Batch not found: {batch_id}", file=sys.stderr, flush=True)
+            debug_log(f"Batch not found!", batch_id=batch_id_str, level="ERROR")
             raise ValueError(f"Batch {batch_id} not found")
         
-        print(f"[DEBUG] Found batch: {batch.name}, status={batch.status}", file=sys.stderr, flush=True)
+        debug_log(f"Found batch: name='{batch.name}', current_status={batch.status}, user_id={batch.user_id}", batch_id=batch_id_str)
         
         # Update batch status
         batch.status = BatchStatus.PROCESSING
         batch.processing_started_at = datetime.utcnow()
         await self.db.flush()
-        print(f"[DEBUG] Updated batch status to PROCESSING", file=sys.stderr, flush=True)
+        debug_log("Updated batch status to PROCESSING", batch_id=batch_id_str)
         
         try:
             # Get all entities in batch (both pending and those needing review)
@@ -395,14 +452,18 @@ Be conservative - only match if confident it's the same organization."""
             )
             entities = result.scalars().all()
             
-            print(f"[DEBUG] Found {len(entities)} entities to process", file=sys.stderr, flush=True)
+            debug_log(f"Found {len(entities)} entities to process (PENDING/MANUAL_REVIEW/MULTIPLE_MATCHES)", batch_id=batch_id_str)
             
             if len(entities) == 0:
-                print(f"[DEBUG] No entities to process, marking batch as completed", file=sys.stderr, flush=True)
+                debug_log("No entities to process, marking batch as completed", batch_id=batch_id_str, level="INFO")
                 batch.status = BatchStatus.COMPLETED
                 batch.processing_completed_at = datetime.utcnow()
                 await self.db.flush()
                 return batch
+            
+            # Log entity names for debugging
+            entity_names = [e.original_name for e in entities[:10]]  # First 10
+            debug_log(f"First entities to process: {entity_names}", batch_id=batch_id_str)
             
             # Get total count of all entities (not just pending)
             total_result = await self.db.execute(
@@ -413,62 +474,111 @@ Be conservative - only match if confident it's the same organization."""
             
             # Count already matched entities
             already_matched = sum(1 for e in all_entities if e.resolution_status == ResolutionStatus.MATCHED)
+            debug_log(f"Total entities in batch: {len(all_entities)}, already matched: {already_matched}", batch_id=batch_id_str)
             
             processed = 0
             matched = already_matched
             failed = 0
             
-            # Process ONE AT A TIME to avoid connection issues
-            print(f"[DEBUG] Processing entities sequentially to avoid connection issues", file=sys.stderr, flush=True)
+            debug_log("Starting SEQUENTIAL processing (one entity at a time)", batch_id=batch_id_str)
             
             for entity in entities:
+                entity_start = datetime.utcnow()
                 try:
-                    print(f"[DEBUG] Processing entity {processed + 1}/{len(entities)}: {entity.original_name}", file=sys.stderr, flush=True)
+                    debug_log(f"Processing entity {processed + 1}/{len(entities)}", 
+                             batch_id=batch_id_str, entity_name=entity.original_name)
+                    
+                    # Log original data for debugging
+                    if entity.original_data:
+                        debug_log(f"Original data keys: {list(entity.original_data.keys())}", 
+                                 batch_id=batch_id_str, entity_name=entity.original_name)
+                    
                     await self.resolve_entity(entity, use_ai=use_ai)
+                    
+                    entity_duration = (datetime.utcnow() - entity_start).total_seconds()
+                    
                     if entity.resolution_status == ResolutionStatus.MATCHED:
                         matched += 1
-                        print(f"[DEBUG] Entity MATCHED: {entity.original_name} -> {entity.resolved_name}", file=sys.stderr, flush=True)
+                        debug_log(f"✓ MATCHED in {entity_duration:.2f}s: resolved_name='{entity.resolved_name}', charity_number={entity.charity_number}, method={entity.resolution_method}, confidence={entity.resolution_confidence}", 
+                                 batch_id=batch_id_str, entity_name=entity.original_name, level="INFO")
+                    elif entity.resolution_status == ResolutionStatus.NO_MATCH:
+                        debug_log(f"✗ NO_MATCH in {entity_duration:.2f}s: No matching charity found", 
+                                 batch_id=batch_id_str, entity_name=entity.original_name)
+                    elif entity.resolution_status == ResolutionStatus.MULTIPLE_MATCHES:
+                        debug_log(f"? MULTIPLE_MATCHES in {entity_duration:.2f}s: Multiple candidates found, needs review", 
+                                 batch_id=batch_id_str, entity_name=entity.original_name)
                     else:
-                        print(f"[DEBUG] Entity status: {entity.resolution_status}", file=sys.stderr, flush=True)
+                        debug_log(f"- Status={entity.resolution_status} in {entity_duration:.2f}s", 
+                                 batch_id=batch_id_str, entity_name=entity.original_name)
+                                 
                 except Exception as e:
-                    print(f"[DEBUG] Entity resolution ERROR for {entity.original_name}: {str(e)}", file=sys.stderr, flush=True)
-                    print(f"[DEBUG] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
-                    logger.error("Entity resolution error", entity_id=str(entity.id), error=str(e))
+                    entity_duration = (datetime.utcnow() - entity_start).total_seconds()
+                    error_tb = traceback.format_exc()
+                    debug_log(f"✗ ERROR in {entity_duration:.2f}s: {type(e).__name__}: {str(e)}", 
+                             batch_id=batch_id_str, entity_name=entity.original_name, level="ERROR")
+                    debug_log(f"Traceback:\n{error_tb}", batch_id=batch_id_str, level="ERROR")
+                    
+                    logger.error("Entity resolution error", 
+                                entity_id=str(entity.id), 
+                                entity_name=entity.original_name,
+                                error=str(e),
+                                error_type=type(e).__name__)
                     entity.resolution_status = ResolutionStatus.MANUAL_REVIEW
                     entity.resolved_at = datetime.utcnow()
                     failed += 1
+                    
                 finally:
                     processed += 1
                     batch.processed_records = already_matched + processed
                     batch.matched_records = matched
                     batch.failed_records = failed
+                    
                     # Flush after each entity to save progress
                     await self.db.flush()
-                    print(f"[DEBUG] Progress: {processed}/{len(entities)} processed, {matched} matched, {failed} failed", file=sys.stderr, flush=True)
+                    
+                    # Log progress every 10 entities or on each entity in small batches
+                    if processed % 10 == 0 or len(entities) <= 20:
+                        elapsed = (datetime.utcnow() - start_time).total_seconds()
+                        rate = processed / elapsed if elapsed > 0 else 0
+                        debug_log(f"=== PROGRESS: {processed}/{len(entities)} ({(processed/len(entities)*100):.1f}%) | matched={matched} | failed={failed} | rate={rate:.2f}/sec ===", 
+                                 batch_id=batch_id_str, level="INFO")
             
-            print(f"[DEBUG] All entities processed. Total: {processed}, Matched: {matched}, Failed: {failed}", file=sys.stderr, flush=True)
+            total_duration = (datetime.utcnow() - start_time).total_seconds()
+            debug_log(f"=== ALL ENTITIES PROCESSED in {total_duration:.2f}s ===", batch_id=batch_id_str, level="INFO")
+            debug_log(f"Final counts: total={processed}, matched={matched}, failed={failed}", batch_id=batch_id_str, level="INFO")
             
             # Update batch status
-            batch.status = BatchStatus.COMPLETED
-            batch.processing_completed_at = datetime.utcnow()
-            
             if failed > 0 and matched == 0:
                 batch.status = BatchStatus.FAILED
+                debug_log("Setting batch status to FAILED (all entities failed)", batch_id=batch_id_str, level="ERROR")
             elif failed > 0:
                 batch.status = BatchStatus.PARTIAL
+                debug_log("Setting batch status to PARTIAL (some entities failed)", batch_id=batch_id_str)
+            else:
+                batch.status = BatchStatus.COMPLETED
+                debug_log("Setting batch status to COMPLETED (all successful)", batch_id=batch_id_str, level="INFO")
             
+            batch.processing_completed_at = datetime.utcnow()
             await self.db.flush()
-            print(f"[DEBUG] Final batch status: {batch.status}", file=sys.stderr, flush=True)
+            
+            debug_log(f"=== EntityResolver.process_batch FINISHED ===", batch_id=batch_id_str, level="INFO")
+            debug_log(f"Final status: {batch.status}, total_records={batch.total_records}, processed={batch.processed_records}, matched={batch.matched_records}, failed={batch.failed_records}", 
+                     batch_id=batch_id_str, level="INFO")
             
         except Exception as e:
-            print(f"[DEBUG] EXCEPTION in process_batch: {str(e)}", file=sys.stderr, flush=True)
-            print(f"[DEBUG] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+            total_duration = (datetime.utcnow() - start_time).total_seconds()
+            error_tb = traceback.format_exc()
+            debug_log(f"=== EXCEPTION in process_batch after {total_duration:.2f}s ===", batch_id=batch_id_str, level="ERROR")
+            debug_log(f"Exception: {type(e).__name__}: {str(e)}", batch_id=batch_id_str, level="ERROR")
+            debug_log(f"Traceback:\n{error_tb}", batch_id=batch_id_str, level="ERROR")
+            
             batch.status = BatchStatus.FAILED
-            batch.error_message = str(e)
+            batch.error_message = f"{type(e).__name__}: {str(e)}"
             await self.db.flush()
             raise
         
         finally:
+            debug_log("Closing charity service connection", batch_id=batch_id_str)
             await self.close()
         
         return batch

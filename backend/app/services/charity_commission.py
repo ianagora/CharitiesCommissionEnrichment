@@ -1,5 +1,6 @@
 """Charity Commission API integration service."""
 import asyncio
+import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import re
@@ -11,6 +12,14 @@ from app.config import settings
 import structlog
 
 logger = structlog.get_logger()
+
+
+def api_log(msg: str, charity_number: str = "", level: str = "DEBUG"):
+    """Log API calls for debugging."""
+    timestamp = datetime.utcnow().isoformat()
+    context = f"[charity={charity_number}] " if charity_number else ""
+    formatted = f"[{level}] [{timestamp}] [CharityAPI] {context}{msg}"
+    print(formatted, file=sys.stdout, flush=True)
 
 
 class CharityCommissionService:
@@ -179,9 +188,11 @@ class CharityCommissionService:
             Dict containing charity details or None if not found
         """
         normalized = self.normalize_charity_number(charity_number)
+        api_log(f"get_charity_by_number: looking up charity #{normalized}", charity_number=normalized)
         
         # Check if API key is configured
         if not self.api_key:
+            api_log("API key not configured - cannot fetch charity details", charity_number=normalized, level="WARNING")
             logger.warning("Charity Commission API key not configured")
             return None
         
@@ -189,11 +200,18 @@ class CharityCommissionService:
         
         try:
             # Use charityDetails endpoint for full info
+            start_time = datetime.utcnow()
+            api_log(f"Calling API: GET /charityDetails/{normalized}/0", charity_number=normalized)
             response = await client.get(f"/charityDetails/{normalized}/0")
+            duration = (datetime.utcnow() - start_time).total_seconds()
+            
             if response.status_code == 404:
+                api_log(f"API returned 404 (not found) in {duration:.2f}s", charity_number=normalized)
                 return None
+            
             response.raise_for_status()
             data = response.json()
+            api_log(f"API SUCCESS in {duration:.2f}s: charity_name='{data.get('charity_name', 'N/A')}'", charity_number=normalized)
             
             # Convert API response to our expected format
             return {

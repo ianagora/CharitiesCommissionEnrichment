@@ -1,4 +1,6 @@
 """FastAPI application entry point."""
+import logging
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -14,7 +16,14 @@ from app.config import settings
 from app.database import init_db, close_db
 from app.api import api_router
 
-# Configure structured logging
+# Configure Python logging to use stdout/stderr
+logging.basicConfig(
+    format="%(message)s",
+    stream=sys.stdout,
+    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
+)
+
+# Configure structured logging with console renderer for Railway visibility
 structlog.configure(
     processors=[
         structlog.stdlib.filter_by_level,
@@ -25,13 +34,17 @@ structlog.configure(
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer(),
+        # Use ConsoleRenderer for Railway logs (easier to read)
+        structlog.dev.ConsoleRenderer() if settings.DEBUG else structlog.processors.JSONRenderer(),
     ],
     wrapper_class=structlog.stdlib.BoundLogger,
     context_class=dict,
     logger_factory=structlog.stdlib.LoggerFactory(),
-    cache_logger_on_first_use=True,
+    cache_logger_on_first_use=False,  # Allow log level changes
 )
+
+# Print startup log level
+print(f"[STARTUP] Log level set to: {settings.LOG_LEVEL}", file=sys.stdout, flush=True)
 
 logger = structlog.get_logger()
 
