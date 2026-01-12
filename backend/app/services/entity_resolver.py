@@ -359,6 +359,11 @@ Be conservative - only match if confident it's the same organization."""
         Returns:
             Updated batch
         """
+        import sys
+        import traceback
+        
+        print(f"[DEBUG] EntityResolver.process_batch STARTED batch_id={batch_id}", file=sys.stderr, flush=True)
+        
         # Get batch
         result = await self.db.execute(
             select(EntityBatch).where(EntityBatch.id == batch_id)
@@ -366,12 +371,16 @@ Be conservative - only match if confident it's the same organization."""
         batch = result.scalar_one_or_none()
         
         if not batch:
+            print(f"[DEBUG] Batch not found: {batch_id}", file=sys.stderr, flush=True)
             raise ValueError(f"Batch {batch_id} not found")
+        
+        print(f"[DEBUG] Found batch: {batch.name}, status={batch.status}", file=sys.stderr, flush=True)
         
         # Update batch status
         batch.status = BatchStatus.PROCESSING
         batch.processing_started_at = datetime.utcnow()
         await self.db.flush()
+        print(f"[DEBUG] Updated batch status to PROCESSING", file=sys.stderr, flush=True)
         
         try:
             # Get all entities in batch
@@ -381,6 +390,8 @@ Be conservative - only match if confident it's the same organization."""
                 .where(Entity.resolution_status == ResolutionStatus.PENDING)
             )
             entities = result.scalars().all()
+            
+            print(f"[DEBUG] Found {len(entities)} pending entities to process", file=sys.stderr, flush=True)
             
             batch.total_records = len(entities)
             processed = 0
@@ -394,10 +405,16 @@ Be conservative - only match if confident it's the same organization."""
                 nonlocal processed, matched, failed
                 async with semaphore:
                     try:
+                        print(f"[DEBUG] Processing entity: {entity.original_name}", file=sys.stderr, flush=True)
                         await self.resolve_entity(entity, use_ai=use_ai)
                         if entity.resolution_status == ResolutionStatus.MATCHED:
                             matched += 1
+                            print(f"[DEBUG] Entity MATCHED: {entity.original_name} -> {entity.resolved_name}", file=sys.stderr, flush=True)
+                        else:
+                            print(f"[DEBUG] Entity status: {entity.resolution_status}", file=sys.stderr, flush=True)
                     except Exception as e:
+                        print(f"[DEBUG] Entity resolution ERROR for {entity.original_name}: {str(e)}", file=sys.stderr, flush=True)
+                        print(f"[DEBUG] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
                         logger.error("Entity resolution error", entity_id=str(entity.id), error=str(e))
                         entity.resolution_status = ResolutionStatus.NO_MATCH
                         failed += 1
@@ -408,9 +425,13 @@ Be conservative - only match if confident it's the same organization."""
                         batch.failed_records = failed
                         if processed % 10 == 0:
                             await self.db.flush()
+                            print(f"[DEBUG] Progress: {processed}/{len(entities)} processed, {matched} matched, {failed} failed", file=sys.stderr, flush=True)
             
             # Process all entities concurrently
+            print(f"[DEBUG] Starting concurrent processing with max_concurrent={max_concurrent}", file=sys.stderr, flush=True)
             await asyncio.gather(*[process_with_semaphore(e) for e in entities])
+            
+            print(f"[DEBUG] All entities processed. Total: {processed}, Matched: {matched}, Failed: {failed}", file=sys.stderr, flush=True)
             
             # Update batch status
             batch.status = BatchStatus.COMPLETED
@@ -422,8 +443,11 @@ Be conservative - only match if confident it's the same organization."""
                 batch.status = BatchStatus.PARTIAL
             
             await self.db.flush()
+            print(f"[DEBUG] Final batch status: {batch.status}", file=sys.stderr, flush=True)
             
         except Exception as e:
+            print(f"[DEBUG] EXCEPTION in process_batch: {str(e)}", file=sys.stderr, flush=True)
+            print(f"[DEBUG] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
             batch.status = BatchStatus.FAILED
             batch.error_message = str(e)
             await self.db.flush()

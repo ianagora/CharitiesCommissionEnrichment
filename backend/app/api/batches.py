@@ -247,30 +247,50 @@ async def process_batch_background(
     max_depth: int,
 ):
     """Background task to process a batch."""
+    import traceback
+    import sys
     from app.database import get_db_context
     
-    async with get_db_context() as db:
-        try:
-            # Process entities
-            resolver = EntityResolverService(db)
-            await resolver.process_batch(batch_id, use_ai=use_ai)
-            
-            # Build ownership trees if requested
-            if build_ownership:
-                builder = OwnershipTreeBuilder(db)
-                await builder.build_trees_for_batch(batch_id, max_depth=max_depth)
-            
-            logger.info("Batch processing completed", batch_id=str(batch_id))
-            
-        except Exception as e:
-            logger.error("Batch processing failed", batch_id=str(batch_id), error=str(e))
-            # Update batch status to failed
-            result = await db.execute(select(EntityBatch).where(EntityBatch.id == batch_id))
-            batch = result.scalar_one_or_none()
-            if batch:
-                batch.status = BatchStatus.FAILED
-                batch.error_message = str(e)
-                await db.commit()
+    print(f"[DEBUG] process_batch_background STARTED for batch_id={batch_id}", file=sys.stderr, flush=True)
+    logger.info("Background task started", batch_id=str(batch_id), use_ai=use_ai, build_ownership=build_ownership)
+    
+    try:
+        async with get_db_context() as db:
+            print(f"[DEBUG] Got DB context for batch_id={batch_id}", file=sys.stderr, flush=True)
+            try:
+                # Process entities
+                print(f"[DEBUG] Creating EntityResolverService", file=sys.stderr, flush=True)
+                resolver = EntityResolverService(db)
+                
+                print(f"[DEBUG] Starting process_batch", file=sys.stderr, flush=True)
+                await resolver.process_batch(batch_id, use_ai=use_ai)
+                print(f"[DEBUG] process_batch completed", file=sys.stderr, flush=True)
+                
+                # Build ownership trees if requested
+                if build_ownership:
+                    print(f"[DEBUG] Building ownership trees", file=sys.stderr, flush=True)
+                    builder = OwnershipTreeBuilder(db)
+                    await builder.build_trees_for_batch(batch_id, max_depth=max_depth)
+                
+                print(f"[DEBUG] Batch processing completed successfully", file=sys.stderr, flush=True)
+                logger.info("Batch processing completed", batch_id=str(batch_id))
+                
+            except Exception as e:
+                print(f"[DEBUG] ERROR in batch processing: {type(e).__name__}: {str(e)}", file=sys.stderr, flush=True)
+                print(f"[DEBUG] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                logger.error("Batch processing failed", batch_id=str(batch_id), error=str(e), traceback=traceback.format_exc())
+                # Update batch status to failed
+                result = await db.execute(select(EntityBatch).where(EntityBatch.id == batch_id))
+                batch = result.scalar_one_or_none()
+                if batch:
+                    batch.status = BatchStatus.FAILED
+                    batch.error_message = str(e)
+                    await db.commit()
+                    print(f"[DEBUG] Batch status updated to FAILED", file=sys.stderr, flush=True)
+    except Exception as outer_e:
+        print(f"[DEBUG] OUTER ERROR: {type(outer_e).__name__}: {str(outer_e)}", file=sys.stderr, flush=True)
+        print(f"[DEBUG] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        logger.error("Background task outer error", batch_id=str(batch_id), error=str(outer_e))
 
 
 @router.post("/{batch_id}/process", response_model=EntityBatchResponse)
@@ -286,6 +306,9 @@ async def process_batch(
     
     This runs in the background. Poll the batch status to check progress.
     """
+    import sys
+    print(f"[DEBUG] POST /process called for batch_id={batch_id}", file=sys.stderr, flush=True)
+    
     result = await db.execute(
         select(EntityBatch)
         .where(EntityBatch.id == batch_id)
@@ -294,12 +317,16 @@ async def process_batch(
     batch = result.scalar_one_or_none()
     
     if not batch:
+        print(f"[DEBUG] Batch not found: {batch_id}", file=sys.stderr, flush=True)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Batch not found",
         )
     
+    print(f"[DEBUG] Found batch: {batch.name}, current status={batch.status}", file=sys.stderr, flush=True)
+    
     if batch.status == BatchStatus.PROCESSING:
+        print(f"[DEBUG] Batch already processing", file=sys.stderr, flush=True)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Batch is already being processed",
@@ -308,8 +335,10 @@ async def process_batch(
     # Update status
     batch.status = BatchStatus.PROCESSING
     await db.flush()
+    print(f"[DEBUG] Updated batch status to PROCESSING", file=sys.stderr, flush=True)
     
     # Start background processing
+    print(f"[DEBUG] Adding background task for batch processing", file=sys.stderr, flush=True)
     background_tasks.add_task(
         process_batch_background,
         batch_id,
@@ -326,6 +355,7 @@ async def process_batch(
         build_ownership=request.build_ownership_tree,
     )
     
+    print(f"[DEBUG] Returning from /process endpoint, background task scheduled", file=sys.stderr, flush=True)
     return batch
 
 
