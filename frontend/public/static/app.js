@@ -325,19 +325,25 @@ async function loadBatchDetail(batchId) {
 }
 
 async function processBatch() {
-    if (!currentBatchId) return;
+    console.log('[processBatch] Called, currentBatchId:', currentBatchId);
+    if (!currentBatchId) {
+        console.log('[processBatch] No currentBatchId, returning');
+        return;
+    }
     
     const btn = document.getElementById('process-btn');
     btn.disabled = true;
     btn.innerHTML = '<div class="loader inline-block mr-2"></div>Starting...';
     
     try {
-        await api.post(`/batches/${currentBatchId}/process`, {
+        console.log('[processBatch] Calling API:', `/batches/${currentBatchId}/process`);
+        const response = await api.post(`/batches/${currentBatchId}/process`, {
             batch_id: currentBatchId,
             use_ai_matching: true,
             build_ownership_tree: true,
             max_ownership_depth: 3
         });
+        console.log('[processBatch] API response:', response.data);
         
         alert('Processing started! This may take a few minutes.');
         
@@ -359,6 +365,8 @@ async function processBatch() {
             }
         }, 3000);
     } catch (error) {
+        console.error('[processBatch] Error:', error);
+        console.error('[processBatch] Error response:', error.response?.data);
         alert(error.response?.data?.detail || 'Failed to start processing');
         btn.disabled = false;
         btn.innerHTML = '<i class="fas fa-play mr-2"></i>Process';
