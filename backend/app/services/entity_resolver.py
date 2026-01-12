@@ -75,42 +75,66 @@ class EntityResolverService:
         Uses multiple strategies:
         1. Direct SequenceMatcher ratio on normalized names
         2. Check if one name contains the other (partial match bonus)
-        3. Word overlap score
+        3. Word overlap score with subset bonus
+        4. First word match bonus (important for charity names)
         
         Returns the best score from these strategies.
         """
         norm1 = EntityResolverService.normalize_name(name1)
         norm2 = EntityResolverService.normalize_name(name2)
         
+        # Also check original names (case insensitive) for containment
+        orig1 = name1.lower().strip()
+        orig2 = name2.lower().strip()
+        
         # Strategy 1: Direct sequence matching
         seq_score = SequenceMatcher(None, norm1, norm2).ratio()
         
         # Strategy 2: Containment check (if one is contained in the other)
         containment_score = 0.0
-        if norm1 and norm2:
-            if norm1 in norm2 or norm2 in norm1:
-                # Calculate containment ratio
+        # Check in both normalized and original forms
+        if (norm1 and norm2 and (norm1 in norm2 or norm2 in norm1)) or \
+           (orig1 and orig2 and (orig1 in orig2 or orig2 in orig1)):
+            # Full containment gives high score
+            containment_score = 0.85
+            # Boost further if normalized forms are very similar in length
+            if norm1 and norm2:
                 shorter = min(len(norm1), len(norm2))
                 longer = max(len(norm1), len(norm2))
-                containment_score = shorter / longer if longer > 0 else 0
-                # Boost if the shorter name is fully contained
-                containment_score = min(0.95, containment_score + 0.3)
+                length_ratio = shorter / longer if longer > 0 else 0
+                if length_ratio > 0.5:
+                    containment_score = min(0.95, containment_score + 0.1)
         
-        # Strategy 3: Word overlap (Jaccard-like)
+        # Strategy 3: Word overlap (Jaccard-like) with strong subset bonus
         words1 = set(norm1.split())
         words2 = set(norm2.split())
+        word_score = 0.0
         if words1 and words2:
             intersection = len(words1 & words2)
             union = len(words1 | words2)
             word_score = intersection / union if union > 0 else 0
-            # Boost if all words from shorter name are in longer
+            
+            # Strong boost if all words from one name are in the other
             if words1.issubset(words2) or words2.issubset(words1):
-                word_score = min(0.95, word_score + 0.2)
-        else:
-            word_score = 0.0
+                # If the shorter set has all its words in the longer, high confidence
+                smaller_set = words1 if len(words1) <= len(words2) else words2
+                if len(smaller_set) >= 1:
+                    word_score = max(word_score, 0.80)  # Minimum 80% for subset match
+                if len(smaller_set) >= 2:
+                    word_score = max(word_score, 0.90)  # 90% for 2+ word subset
+        
+        # Strategy 4: First word match bonus
+        # Many charities are known by their first word (Shelter, Oxfam, etc.)
+        first_word_bonus = 0.0
+        if words1 and words2:
+            first1 = norm1.split()[0] if norm1 else ""
+            first2 = norm2.split()[0] if norm2 else ""
+            if first1 and first2 and (first1 == first2 or first1 in first2 or first2 in first1):
+                # First words match - this is often the key identifier
+                first_word_bonus = 0.75
         
         # Return the best score
-        return max(seq_score, containment_score, word_score)
+        return max(seq_score, containment_score, word_score, first_word_bonus)
     
     async def search_candidates(
         self,
