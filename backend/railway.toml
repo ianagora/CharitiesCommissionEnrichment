@@ -1,9 +1,12 @@
 [build]
-builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile"
+builder = "NIXPACKS"
 watchPatterns = ["app/**", "requirements.txt", "*.py"]
 
+[build.env]
+NIXPACKS_PYTHON_VERSION = "3.11"
+
 [deploy]
+startCommand = "gunicorn app.main:app --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --timeout 120"
 healthcheckPath = "/api/v1/health"
 healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
