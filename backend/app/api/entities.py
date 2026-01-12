@@ -51,11 +51,10 @@ async def list_entities_in_batch(
             detail="Batch not found",
         )
     
-    # Build query
+    # Build query - Don't use selectinload for dynamic relationships
     query = (
         select(Entity)
         .where(Entity.batch_id == batch_id)
-        .options(selectinload(Entity.resolutions))
     )
     
     if status_filter:
@@ -82,7 +81,38 @@ async def list_entities_in_batch(
         for e in entities:
             print(f"[DEBUG] Converting entity: id={e.id}, name={e.original_name}, type={e.entity_type}, status={e.resolution_status}", file=sys.stderr, flush=True)
             try:
-                response = EntityResponse.model_validate(e)
+                # Manually convert to dict and set resolutions to None (they need separate endpoint)
+                entity_dict = {
+                    "id": e.id,
+                    "batch_id": e.batch_id,
+                    "original_name": e.original_name,
+                    "original_data": e.original_data,
+                    "row_number": e.row_number,
+                    "entity_type": e.entity_type,
+                    "resolved_name": e.resolved_name,
+                    "charity_number": e.charity_number,
+                    "company_number": e.company_number,
+                    "charity_status": e.charity_status,
+                    "charity_registration_date": e.charity_registration_date,
+                    "charity_activities": e.charity_activities,
+                    "charity_contact_email": e.charity_contact_email,
+                    "charity_website": e.charity_website,
+                    "charity_address": e.charity_address,
+                    "latest_income": e.latest_income,
+                    "latest_expenditure": e.latest_expenditure,
+                    "latest_financial_year_end": e.latest_financial_year_end,
+                    "resolution_status": e.resolution_status,
+                    "resolution_confidence": e.resolution_confidence,
+                    "resolution_method": e.resolution_method,
+                    "parent_entity_id": e.parent_entity_id,
+                    "ownership_level": e.ownership_level,
+                    "enriched_data": e.enriched_data,
+                    "created_at": e.created_at,
+                    "updated_at": e.updated_at,
+                    "resolved_at": e.resolved_at,
+                    "resolutions": None,  # Don't include resolutions in list view
+                }
+                response = EntityResponse.model_validate(entity_dict)
                 responses.append(response)
             except Exception as convert_err:
                 print(f"[DEBUG] Error converting entity {e.id}: {type(convert_err).__name__}: {convert_err}", file=sys.stderr, flush=True)
@@ -168,7 +198,7 @@ async def get_entity(
     """Get entity details."""
     result = await db.execute(
         select(Entity)
-        .options(selectinload(Entity.resolutions))
+        
         .where(Entity.id == entity_id)
     )
     entity = result.scalar_one_or_none()
@@ -204,7 +234,7 @@ async def update_entity(
     """Update entity details."""
     result = await db.execute(
         select(Entity)
-        .options(selectinload(Entity.resolutions))
+        
         .where(Entity.id == entity_id)
     )
     entity = result.scalar_one_or_none()
@@ -325,7 +355,7 @@ async def confirm_entity_resolution(
     # Refresh with resolutions
     result = await db.execute(
         select(Entity)
-        .options(selectinload(Entity.resolutions))
+        
         .where(Entity.id == entity_id)
     )
     entity = result.scalar_one()
@@ -351,7 +381,7 @@ async def re_resolve_entity(
     # Verify entity access
     result = await db.execute(
         select(Entity)
-        .options(selectinload(Entity.resolutions))
+        
         .where(Entity.id == entity_id)
     )
     entity = result.scalar_one_or_none()
@@ -395,7 +425,7 @@ async def re_resolve_entity(
     # Refresh with resolutions
     result = await db.execute(
         select(Entity)
-        .options(selectinload(Entity.resolutions))
+        
         .where(Entity.id == entity_id)
     )
     entity = result.scalar_one()
