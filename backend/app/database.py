@@ -8,9 +8,9 @@ from sqlalchemy.pool import NullPool
 
 from app.config import settings
 
-# Create async engine
+# Create async engine - use async_database_url which converts postgres:// to postgresql+asyncpg://
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    settings.async_database_url,
     echo=settings.DEBUG,
     poolclass=NullPool if settings.ENVIRONMENT == "testing" else None,
     pool_size=settings.DATABASE_POOL_SIZE if settings.ENVIRONMENT != "testing" else None,

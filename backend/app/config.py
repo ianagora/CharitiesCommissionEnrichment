@@ -22,6 +22,21 @@ class Settings(BaseSettings):
     DATABASE_POOL_SIZE: int = 5
     DATABASE_MAX_OVERFLOW: int = 10
     
+    @property
+    def async_database_url(self) -> str:
+        """Convert DATABASE_URL to async format for SQLAlchemy.
+        
+        Railway provides postgres:// but SQLAlchemy async needs postgresql+asyncpg://
+        """
+        url = self.DATABASE_URL
+        # Handle Railway's postgres:// URL
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+        # Handle standard postgresql:// URL
+        elif url.startswith("postgresql://") and "+asyncpg" not in url:
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return url
+    
     # JWT Authentication
     JWT_SECRET_KEY: str = "your-super-secret-key-change-in-production"
     JWT_ALGORITHM: str = "HS256"

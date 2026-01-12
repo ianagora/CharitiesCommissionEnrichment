@@ -44,15 +44,24 @@ async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
     logger.info("Starting application", app_name=settings.APP_NAME)
-    await init_db()
-    logger.info("Database initialized")
+    
+    # Try to initialize database, but don't fail if it's not ready
+    # This allows the health endpoint to work while DB is still starting
+    try:
+        await init_db()
+        logger.info("Database initialized")
+    except Exception as e:
+        logger.warning("Database initialization failed - will retry on first request", error=str(e))
     
     yield
     
     # Shutdown
     logger.info("Shutting down application")
-    await close_db()
-    logger.info("Database connections closed")
+    try:
+        await close_db()
+        logger.info("Database connections closed")
+    except Exception as e:
+        logger.warning("Error closing database connections", error=str(e))
 
 
 # Create FastAPI application
