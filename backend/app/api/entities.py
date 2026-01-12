@@ -18,6 +18,8 @@ from app.services.entity_resolver import EntityResolverService
 from app.services.ownership_builder import OwnershipTreeBuilder
 from app.api.deps import get_current_active_user
 import structlog
+import sys
+import traceback
 
 logger = structlog.get_logger()
 
@@ -73,7 +75,24 @@ async def list_entities_in_batch(
     result = await db.execute(query)
     entities = result.scalars().all()
     
-    return [EntityResponse.model_validate(e) for e in entities]
+    print(f"[DEBUG] Found {len(entities)} entities", file=sys.stderr, flush=True)
+    
+    try:
+        responses = []
+        for e in entities:
+            print(f"[DEBUG] Converting entity: id={e.id}, name={e.original_name}, type={e.entity_type}, status={e.resolution_status}", file=sys.stderr, flush=True)
+            try:
+                response = EntityResponse.model_validate(e)
+                responses.append(response)
+            except Exception as convert_err:
+                print(f"[DEBUG] Error converting entity {e.id}: {type(convert_err).__name__}: {convert_err}", file=sys.stderr, flush=True)
+                print(f"[DEBUG] Entity data: entity_type={e.entity_type}, resolution_status={e.resolution_status}", file=sys.stderr, flush=True)
+                raise
+        return responses
+    except Exception as e:
+        print(f"[DEBUG] Error building response: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        print(f"[DEBUG] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        raise
 
 
 @router.get("/batch/{batch_id}/stats")
