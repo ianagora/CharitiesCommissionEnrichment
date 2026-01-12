@@ -31,7 +31,8 @@ class User(Base):
     api_key_created_at = Column(DateTime, nullable=True)
     
     # Token security - version increments on password change/logout to invalidate tokens
-    token_version = Column(Integer, default=0, nullable=False)
+    # Note: nullable=True for backwards compatibility with existing rows
+    token_version = Column(Integer, default=0, nullable=True)
     # Track the current refresh token family (for refresh token rotation)
     refresh_token_family = Column(String(64), nullable=True, index=True)
     

@@ -58,9 +58,42 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db():
-    """Initialize database tables."""
+    """Initialize database tables and run any needed migrations."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        
+        # Add missing columns to users table if they don't exist
+        # This handles migration for new token rotation fields
+        from sqlalchemy import text
+        try:
+            # Check if token_version column exists
+            result = await conn.execute(text("""
+                SELECT column_name FROM information_schema.columns 
+                WHERE table_name = 'users' AND column_name = 'token_version'
+            """))
+            if not result.fetchone():
+                await conn.execute(text("""
+                    ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 0
+                """))
+                print("[MIGRATION] Added token_version column to users table")
+            
+            # Check if refresh_token_family column exists
+            result = await conn.execute(text("""
+                SELECT column_name FROM information_schema.columns 
+                WHERE table_name = 'users' AND column_name = 'refresh_token_family'
+            """))
+            if not result.fetchone():
+                await conn.execute(text("""
+                    ALTER TABLE users ADD COLUMN refresh_token_family VARCHAR(64)
+                """))
+                # Create index
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS ix_users_refresh_token_family 
+                    ON users (refresh_token_family)
+                """))
+                print("[MIGRATION] Added refresh_token_family column to users table")
+        except Exception as e:
+            print(f"[MIGRATION] Migration check/update: {e}")
 
 
 async def close_db():
