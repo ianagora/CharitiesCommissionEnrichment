@@ -1,7 +1,7 @@
 // Charity Commission Data Enrichment Platform - Frontend JavaScript
 
-// API Configuration
-const API_BASE = '/api/v1';
+// API Configuration - Direct backend URL (CORS enabled)
+const API_BASE = 'https://charitiescommissionenrichment-production.up.railway.app/api/v1';
 let accessToken = localStorage.getItem('accessToken');
 let refreshToken = localStorage.getItem('refreshToken');
 let currentBatchId = null;
