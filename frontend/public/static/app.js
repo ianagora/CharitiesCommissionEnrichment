@@ -642,9 +642,6 @@ async function showEntityDetail(entityId) {
                         <i class="fas fa-check mr-2"></i>Confirm Match
                     </button>
                 ` : ''}
-                <button onclick="buildOwnershipTree('${entity.id}')" class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg">
-                    <i class="fas fa-sitemap mr-2"></i>Build Ownership Tree
-                </button>
             </div>
         `;
         
@@ -658,33 +655,60 @@ function closeEntityModal() {
     document.getElementById('entity-modal').classList.add('hidden');
 }
 
+// Store fetched charity details for resolutions
+let resolutionCharityDetails = {};
+
 async function showResolutions(entityId) {
     try {
         const response = await api.get(`/entities/${entityId}/resolutions`);
         const resolutions = response.data;
         
+        // Also get the original entity to show what we're matching
+        const entityResponse = await api.get(`/entities/${entityId}`);
+        const entity = entityResponse.data;
+        
         const details = document.getElementById('entity-details');
         details.innerHTML = `
+            <div class="mb-4 p-3 bg-gray-100 rounded-lg">
+                <p class="text-sm text-gray-600">Matching:</p>
+                <p class="font-bold text-lg">${escapeHtml(entity.original_name)}</p>
+                ${entity.original_data ? `
+                    <p class="text-sm text-gray-500 mt-1">Original data: ${Object.entries(entity.original_data).map(([k,v]) => `${k}: ${v}`).join(', ')}</p>
+                ` : ''}
+            </div>
             <h3 class="font-bold text-gray-800 mb-4">Select the correct match:</h3>
-            <div class="space-y-3">
-                ${resolutions.map(res => `
-                    <div class="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer ${res.is_selected ? 'border-green-500 bg-green-50' : ''}" 
-                         onclick="confirmResolution('${entityId}', '${res.id}')">
-                        <div class="flex justify-between items-start">
-                            <div>
-                                <p class="font-medium">${escapeHtml(res.candidate_name)}</p>
-                                <p class="text-sm text-gray-600">Charity #: ${res.charity_number || '-'}</p>
+            <div class="space-y-3" id="resolutions-list">
+                ${resolutions.map((res, idx) => `
+                    <div class="border rounded-lg overflow-hidden ${res.is_selected ? 'border-green-500 bg-green-50' : ''}" id="resolution-${res.id}">
+                        <div class="p-4 hover:bg-gray-50 cursor-pointer" onclick="toggleResolutionDetails('${res.id}', '${res.charity_number}')">
+                            <div class="flex justify-between items-start">
+                                <div>
+                                    <p class="font-medium">${escapeHtml(res.candidate_name)}</p>
+                                    <p class="text-sm text-gray-600">Charity #: ${res.charity_number || '-'}</p>
+                                    <p class="text-xs text-gray-400 mt-1"><i class="fas fa-chevron-down mr-1"></i>Click to view details</p>
+                                </div>
+                                <div class="text-right">
+                                    <span class="px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-sm">
+                                        ${Math.round(res.confidence_score * 100)}% match
+                                    </span>
+                                    <p class="text-xs text-gray-500 mt-1">${res.match_method}</p>
+                                </div>
                             </div>
-                            <div class="text-right">
-                                <span class="px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-sm">
-                                    ${Math.round(res.confidence_score * 100)}% match
-                                </span>
-                                <p class="text-xs text-gray-500 mt-1">${res.match_method}</p>
+                        </div>
+                        <div id="details-${res.id}" class="hidden border-t bg-blue-50 p-4">
+                            <div class="text-center text-gray-500">
+                                <div class="loader inline-block mr-2"></div>Loading details...
                             </div>
+                        </div>
+                        <div class="border-t p-3 bg-gray-50 flex justify-end">
+                            <button onclick="event.stopPropagation(); confirmResolution('${entityId}', '${res.id}')" 
+                                    class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm">
+                                <i class="fas fa-check mr-2"></i>Confirm This Match
+                            </button>
                         </div>
                     </div>
                 `).join('')}
-                <div class="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer border-red-200" 
+                <div class="border rounded-lg p-4 hover:bg-red-50 cursor-pointer border-red-200" 
                      onclick="confirmResolution('${entityId}', null)">
                     <p class="font-medium text-red-600">
                         <i class="fas fa-times mr-2"></i>None of these - Mark as No Match
@@ -693,10 +717,83 @@ async function showResolutions(entityId) {
             </div>
         `;
         
+        // Clear cached details
+        resolutionCharityDetails = {};
+        
         document.getElementById('entity-modal').classList.remove('hidden');
     } catch (error) {
+        console.error('Error loading resolutions:', error);
         alert('Error loading resolutions');
     }
+}
+
+async function toggleResolutionDetails(resolutionId, charityNumber) {
+    const detailsDiv = document.getElementById(`details-${resolutionId}`);
+    
+    if (!detailsDiv.classList.contains('hidden')) {
+        detailsDiv.classList.add('hidden');
+        return;
+    }
+    
+    detailsDiv.classList.remove('hidden');
+    
+    // Check if we already fetched this
+    if (resolutionCharityDetails[charityNumber]) {
+        renderCharityDetails(resolutionId, resolutionCharityDetails[charityNumber]);
+        return;
+    }
+    
+    // Fetch charity details from Charity Commission API via our backend
+    try {
+        const response = await api.get(`/charity/${charityNumber}`);
+        const data = response.data;
+        resolutionCharityDetails[charityNumber] = data;
+        renderCharityDetails(resolutionId, data);
+    } catch (error) {
+        console.error('Error fetching charity details:', error);
+        detailsDiv.innerHTML = `
+            <div class="text-gray-600">
+                <p><strong>Unable to fetch additional details</strong></p>
+                <p class="text-sm">The charity number ${charityNumber} could not be looked up. You can still confirm this match if the name looks correct.</p>
+            </div>
+        `;
+    }
+}
+
+function renderCharityDetails(resolutionId, data) {
+    const detailsDiv = document.getElementById(`details-${resolutionId}`);
+    detailsDiv.innerHTML = `
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div>
+                <p><strong>Official Name:</strong> ${escapeHtml(data.name || '-')}</p>
+                <p><strong>Charity Number:</strong> ${data.charity_number || '-'}</p>
+                <p><strong>Status:</strong> <span class="${data.status === 'Registered' ? 'text-green-600' : 'text-red-600'}">${data.status || '-'}</span></p>
+                <p><strong>Registration Date:</strong> ${data.registration_date ? formatDate(data.registration_date) : '-'}</p>
+            </div>
+            <div>
+                <p><strong>Website:</strong> ${data.website ? `<a href="${data.website}" target="_blank" class="text-blue-600 hover:underline">${data.website}</a>` : '-'}</p>
+                <p><strong>Email:</strong> ${data.contact_email || '-'}</p>
+                <p><strong>Latest Income:</strong> ${data.latest_income ? '£' + formatNumber(data.latest_income) : '-'}</p>
+                <p><strong>Latest Expenditure:</strong> ${data.latest_expenditure ? '£' + formatNumber(data.latest_expenditure) : '-'}</p>
+            </div>
+        </div>
+        ${data.activities ? `
+            <div class="mt-3">
+                <p><strong>Activities:</strong></p>
+                <p class="text-gray-600 text-sm">${escapeHtml(data.activities).substring(0, 300)}${data.activities.length > 300 ? '...' : ''}</p>
+            </div>
+        ` : ''}
+        ${data.address ? `
+            <div class="mt-2">
+                <p><strong>Address:</strong> ${escapeHtml(data.address)}</p>
+            </div>
+        ` : ''}
+        ${data.trustees && data.trustees.length > 0 ? `
+            <div class="mt-3">
+                <p><strong>Trustees (${data.trustees.length}):</strong> ${data.trustees.slice(0, 5).map(t => escapeHtml(t.name || t)).join(', ')}${data.trustees.length > 5 ? '...' : ''}</p>
+            </div>
+        ` : ''}
+    `;
 }
 
 async function confirmResolution(entityId, resolutionId) {
