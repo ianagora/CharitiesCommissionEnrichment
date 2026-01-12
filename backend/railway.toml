@@ -6,7 +6,7 @@ watchPatterns = ["app/**", "requirements.txt", "*.py"]
 NIXPACKS_PYTHON_VERSION = "3.11"
 
 [deploy]
-startCommand = "gunicorn app.main:app --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --timeout 120"
+startCommand = "bash start.sh"
 healthcheckPath = "/api/v1/health"
 healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
