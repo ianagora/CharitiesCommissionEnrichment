@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, Column, DateTime, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -30,6 +30,11 @@ class User(Base):
     api_key = Column(String(64), unique=True, index=True, nullable=True)
     api_key_created_at = Column(DateTime, nullable=True)
     
+    # Token security - version increments on password change/logout to invalidate tokens
+    token_version = Column(Integer, default=0, nullable=False)
+    # Track the current refresh token family (for refresh token rotation)
+    refresh_token_family = Column(String(64), nullable=True, index=True)
+    
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -41,3 +46,8 @@ class User(Base):
     
     def __repr__(self) -> str:
         return f"<User {self.email}>"
+    
+    def invalidate_all_tokens(self):
+        """Increment token version to invalidate all existing tokens."""
+        self.token_version = (self.token_version or 0) + 1
+        self.refresh_token_family = None

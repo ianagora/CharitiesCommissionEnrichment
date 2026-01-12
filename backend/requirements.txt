@@ -34,6 +34,7 @@ email-validator==2.1.0.post1
 
 # Rate limiting
 slowapi==0.1.9
+redis==5.0.1
 
 # CORS
 python-dotenv==1.0.1

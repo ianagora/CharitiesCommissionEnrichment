@@ -1,4 +1,4 @@
-"""Authentication API routes."""
+"""Authentication API routes with refresh token rotation."""
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -66,7 +66,7 @@ async def login(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Authenticate user and return JWT tokens."""
+    """Authenticate user and return JWT tokens with rotation support."""
     client_ip = request.client.host if request.client else None
     
     # Check if account is locked due to too many failed attempts
@@ -135,11 +135,8 @@ async def login(
     # Update last login
     await AuthService.update_last_login(db, user)
     
-    # Create tokens
-    access_token = AuthService.create_access_token(
-        user.id, user.email, user.is_superuser
-    )
-    refresh_token = AuthService.create_refresh_token(user.id)
+    # Create tokens with rotation (new token family for fresh login)
+    access_token, refresh_token, _ = await AuthService.rotate_refresh_token(db, user)
     
     # Create audit log
     audit_log = AuditLog(
@@ -163,9 +160,17 @@ async def login(
 @router.post("/refresh", response_model=Token)
 async def refresh_token(
     refresh_token: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Refresh access token using refresh token."""
+    """
+    Refresh access token using refresh token with rotation.
+    
+    Implements refresh token rotation:
+    - Each refresh issues a new refresh token
+    - Old refresh tokens become invalid
+    - Reuse of old tokens invalidates the entire token family
+    """
     token_data = AuthService.decode_token(refresh_token)
     
     if not token_data or not token_data.user_id:
@@ -174,25 +179,60 @@ async def refresh_token(
             detail="Invalid refresh token",
         )
     
-    user = await AuthService.get_user_by_id(db, token_data.user_id)
+    # Validate the refresh token (checks version and family)
+    is_valid, user, error = await AuthService.validate_refresh_token(db, token_data)
     
-    if not user or not user.is_active:
+    if not is_valid:
+        logger.warning(
+            "Refresh token validation failed",
+            error=error,
+            ip=request.client.host if request.client else None,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive",
+            detail=error or "Invalid refresh token",
         )
     
-    # Create new tokens
-    access_token = AuthService.create_access_token(
-        user.id, user.email, user.is_superuser
+    # Rotate tokens (issue new tokens, same family)
+    access_token, new_refresh_token, _ = await AuthService.rotate_refresh_token(
+        db, user, token_data.token_family
     )
-    new_refresh_token = AuthService.create_refresh_token(user.id)
     
     return Token(
         access_token=access_token,
         refresh_token=new_refresh_token,
         expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
+
+
+@router.post("/logout")
+async def logout(
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Logout user and invalidate all tokens.
+    
+    This increments the user's token_version, which invalidates:
+    - All existing access tokens
+    - All existing refresh tokens
+    """
+    await AuthService.logout_user(db, current_user)
+    
+    # Create audit log
+    audit_log = AuditLog(
+        user_id=current_user.id,
+        action=AuditAction.LOGOUT,
+        description="User logged out - all tokens invalidated",
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        endpoint=str(request.url.path),
+        method=request.method,
+    )
+    db.add(audit_log)
+    
+    return {"message": "Logged out successfully. All sessions have been invalidated."}
 
 
 @router.get("/me", response_model=UserResponse)
@@ -222,10 +262,15 @@ async def update_current_user_profile(
 @router.post("/change-password")
 async def change_password(
     password_data: PasswordChange,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Change current user password."""
+    """
+    Change current user password.
+    
+    This also invalidates all existing tokens, requiring re-login.
+    """
     # Verify current password
     if not AuthService.verify_password(
         password_data.current_password, current_user.hashed_password
@@ -237,9 +282,25 @@ async def change_password(
     
     # Update password
     current_user.hashed_password = AuthService.hash_password(password_data.new_password)
+    
+    # Invalidate all existing tokens (security best practice)
+    current_user.invalidate_all_tokens()
+    
     await db.flush()
     
-    return {"message": "Password changed successfully"}
+    # Create audit log
+    audit_log = AuditLog(
+        user_id=current_user.id,
+        action=AuditAction.PASSWORD_CHANGE,
+        description="Password changed - all tokens invalidated",
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        endpoint=str(request.url.path),
+        method=request.method,
+    )
+    db.add(audit_log)
+    
+    return {"message": "Password changed successfully. Please log in again."}
 
 
 @router.post("/api-key", response_model=dict)

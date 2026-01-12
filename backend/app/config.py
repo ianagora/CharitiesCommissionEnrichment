@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     LOGIN_MAX_ATTEMPTS: int = 5  # Lock after this many failed attempts
     LOGIN_LOCKOUT_MINUTES: int = 15  # Lock duration in minutes
     
+    # Redis (optional - for distributed rate limiting)
+    REDIS_URL: Optional[str] = None  # e.g., redis://localhost:6379/0 or redis://user:pass@host:6379/0
+    
     # CORS - Explicit allowed origins (no wildcards in production)
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000,https://charity-data-enrichment.pages.dev"
     

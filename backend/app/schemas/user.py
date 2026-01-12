@@ -23,6 +23,10 @@ class UserCreate(BaseModel):
             raise ValueError("Password must contain at least one lowercase letter")
         if not any(c.isdigit() for c in v):
             raise ValueError("Password must contain at least one digit")
+        # Require special character
+        special_chars = "!@#$%^&*()_+-=[]{}|;:',.<>?/`~"
+        if not any(c in special_chars for c in v):
+            raise ValueError("Password must contain at least one special character (!@#$%^&*()_+-=[]{}|;:',.<>?/`~)")
         return v
 
 
@@ -67,6 +71,8 @@ class TokenData(BaseModel):
     user_id: Optional[UUID] = None
     email: Optional[str] = None
     is_superuser: bool = False
+    token_version: Optional[int] = None
+    token_family: Optional[str] = None
 
 
 class PasswordChange(BaseModel):
@@ -84,4 +90,8 @@ class PasswordChange(BaseModel):
             raise ValueError("Password must contain at least one lowercase letter")
         if not any(c.isdigit() for c in v):
             raise ValueError("Password must contain at least one digit")
+        # Require special character
+        special_chars = "!@#$%^&*()_+-=[]{}|;:',.<>?/`~"
+        if not any(c in special_chars for c in v):
+            raise ValueError("Password must contain at least one special character (!@#$%^&*()_+-=[]{}|;:',.<>?/`~)")
         return v

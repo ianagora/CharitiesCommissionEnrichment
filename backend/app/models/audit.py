@@ -14,6 +14,7 @@ class AuditAction(str, Enum):
     """Types of auditable actions."""
     LOGIN = "login"
     LOGOUT = "logout"
+    PASSWORD_CHANGE = "password_change"
     BATCH_UPLOAD = "batch_upload"
     BATCH_PROCESS = "batch_process"
     ENTITY_RESOLVE = "entity_resolve"

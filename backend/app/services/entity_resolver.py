@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from openai import AsyncOpenAI
-from sqlalchemy import select, update
+from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -57,6 +57,7 @@ class EntityResolverService:
             " charity", " charitable", " trust", " foundation",
             " association", " society", " organisation", " organization",
             " uk", " england", " wales", " scotland",
+            " national", " campaign", " for", " the", " of", " and",
         ]
         for suffix in suffixes:
             normalized = normalized.replace(suffix, "")
@@ -68,10 +69,48 @@ class EntityResolverService:
     
     @staticmethod
     def calculate_similarity(name1: str, name2: str) -> float:
-        """Calculate similarity score between two names."""
+        """
+        Calculate similarity score between two names.
+        
+        Uses multiple strategies:
+        1. Direct SequenceMatcher ratio on normalized names
+        2. Check if one name contains the other (partial match bonus)
+        3. Word overlap score
+        
+        Returns the best score from these strategies.
+        """
         norm1 = EntityResolverService.normalize_name(name1)
         norm2 = EntityResolverService.normalize_name(name2)
-        return SequenceMatcher(None, norm1, norm2).ratio()
+        
+        # Strategy 1: Direct sequence matching
+        seq_score = SequenceMatcher(None, norm1, norm2).ratio()
+        
+        # Strategy 2: Containment check (if one is contained in the other)
+        containment_score = 0.0
+        if norm1 and norm2:
+            if norm1 in norm2 or norm2 in norm1:
+                # Calculate containment ratio
+                shorter = min(len(norm1), len(norm2))
+                longer = max(len(norm1), len(norm2))
+                containment_score = shorter / longer if longer > 0 else 0
+                # Boost if the shorter name is fully contained
+                containment_score = min(0.95, containment_score + 0.3)
+        
+        # Strategy 3: Word overlap (Jaccard-like)
+        words1 = set(norm1.split())
+        words2 = set(norm2.split())
+        if words1 and words2:
+            intersection = len(words1 & words2)
+            union = len(words1 | words2)
+            word_score = intersection / union if union > 0 else 0
+            # Boost if all words from shorter name are in longer
+            if words1.issubset(words2) or words2.issubset(words1):
+                word_score = min(0.95, word_score + 0.2)
+        else:
+            word_score = 0.0
+        
+        # Return the best score
+        return max(seq_score, containment_score, word_score)
     
     async def search_candidates(
         self,
@@ -101,9 +140,15 @@ class EntityResolverService:
             if not isinstance(charities, list):
                 charities = []
             
-            for charity in charities[:max_results]:
+            seen_charity_numbers = set()
+            for charity in charities[:max_results * 2]:  # Check more to filter duplicates
                 charity_name = charity.get("charityName") or charity.get("name", "")
                 charity_number = charity.get("charityNumber") or charity.get("registeredCharityNumber", "")
+                
+                # Skip duplicates
+                if charity_number in seen_charity_numbers:
+                    continue
+                seen_charity_numbers.add(charity_number)
                 
                 similarity = self.calculate_similarity(entity_name, charity_name)
                 
@@ -278,11 +323,22 @@ Be conservative - only match if confident it's the same organization."""
             debug_log(f"  Candidate {i+1}: '{c['name']}' (#{c['charity_number']}) - similarity={c['similarity_score']:.3f}", 
                      batch_id=batch_id, entity_name=entity_name)
         
-        # Save all candidates as resolutions
+        # Clear any existing resolutions for this entity (in case of re-processing)
+        await self.db.execute(
+            delete(EntityResolution).where(EntityResolution.entity_id == entity.id)
+        )
+        
+        # Save all candidates as resolutions (deduplicated)
+        seen_charity_numbers = set()
         for candidate in candidates:
+            charity_num = candidate["charity_number"]
+            if charity_num in seen_charity_numbers:
+                continue
+            seen_charity_numbers.add(charity_num)
+            
             resolution = EntityResolution(
                 entity_id=entity.id,
-                charity_number=candidate["charity_number"],
+                charity_number=charity_num,
                 candidate_name=candidate["name"],
                 candidate_data=candidate.get("raw_data"),
                 confidence_score=candidate["similarity_score"],
