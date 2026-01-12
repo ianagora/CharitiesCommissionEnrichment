@@ -14,7 +14,14 @@ logger = structlog.get_logger()
 
 
 class CharityCommissionService:
-    """Service for interacting with the Charity Commission API."""
+    """Service for interacting with the Charity Commission API.
+    
+    API Documentation: https://api-portal.charitycommission.gov.uk/
+    
+    Available endpoints:
+    - /charityRegNumber/{regNumber}/{suffix} - Get charity by registration number
+    - /charityDetails/{regNumber}/{suffix} - Get detailed charity info
+    """
     
     BASE_URL = settings.CHARITY_COMMISSION_API_BASE_URL
     
@@ -66,7 +73,6 @@ class CharityCommissionService:
                 return match.group(1).upper()
         return None
     
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def search_charities(
         self,
         search_term: str,
@@ -75,7 +81,11 @@ class CharityCommissionService:
         page_size: int = 10,
     ) -> Dict[str, Any]:
         """
-        Search for charities by name or other criteria.
+        Search for charities by name.
+        
+        Note: The Charity Commission API doesn't have a direct name search endpoint.
+        We use mock data with known charity mappings for name-based searches.
+        For exact charity number lookups, use get_charity_by_number().
         
         Args:
             search_term: Name or keyword to search
@@ -86,67 +96,75 @@ class CharityCommissionService:
         Returns:
             Dict containing search results
         """
-        # Check if API key is configured
-        if not self.api_key:
-            logger.warning("Charity Commission API key not configured - using mock data")
-            return self._get_mock_search_results(search_term)
+        # First, check if search term contains a charity number
+        extracted_number = self.extract_charity_number(search_term)
+        if extracted_number:
+            charity = await self.get_charity_by_number(extracted_number)
+            if charity:
+                return {"charities": [charity]}
         
-        client = await self.get_client()
-        
-        params = {
-            "searchText": search_term,
-            "page": page,
-            "pageSize": page_size,
-        }
-        if status:
-            params["status"] = status
-        
-        try:
-            response = await client.get("/allcharities", params=params)
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            logger.error("Charity Commission API error", status_code=e.response.status_code, error=str(e))
-            # Return mock data if API fails (for demo purposes)
-            if e.response.status_code in [401, 403, 404]:
-                logger.warning("API authentication failed - using mock data for demo")
-                return self._get_mock_search_results(search_term)
-            raise
-        except Exception as e:
-            logger.error("Charity Commission API error", error=str(e))
-            raise
+        # Use name-based lookup with known charity mappings
+        return self._get_search_results_by_name(search_term)
     
-    def _get_mock_search_results(self, search_term: str) -> Dict[str, Any]:
-        """Return mock search results for demo/testing when API is unavailable."""
+    def _get_search_results_by_name(self, search_term: str) -> Dict[str, Any]:
+        """Get search results by matching charity names."""
         # Known charity data for common searches
-        mock_charities = {
+        known_charities = {
             "british red cross": {"charityNumber": "220949", "charityName": "THE BRITISH RED CROSS SOCIETY", "registrationStatus": "Registered"},
+            "red cross": {"charityNumber": "220949", "charityName": "THE BRITISH RED CROSS SOCIETY", "registrationStatus": "Registered"},
             "oxfam": {"charityNumber": "202918", "charityName": "OXFAM", "registrationStatus": "Registered"},
             "cancer research uk": {"charityNumber": "1089464", "charityName": "CANCER RESEARCH UK", "registrationStatus": "Registered"},
+            "cancer research": {"charityNumber": "1089464", "charityName": "CANCER RESEARCH UK", "registrationStatus": "Registered"},
             "nspcc": {"charityNumber": "216401", "charityName": "NATIONAL SOCIETY FOR THE PREVENTION OF CRUELTY TO CHILDREN", "registrationStatus": "Registered"},
             "save the children": {"charityNumber": "213890", "charityName": "SAVE THE CHILDREN INTERNATIONAL", "registrationStatus": "Registered"},
             "barnardo's": {"charityNumber": "216250", "charityName": "BARNARDO'S", "registrationStatus": "Registered"},
             "barnardos": {"charityNumber": "216250", "charityName": "BARNARDO'S", "registrationStatus": "Registered"},
             "marie curie": {"charityNumber": "207994", "charityName": "MARIE CURIE", "registrationStatus": "Registered"},
+            "macmillan cancer support": {"charityNumber": "261017", "charityName": "MACMILLAN CANCER SUPPORT", "registrationStatus": "Registered"},
             "macmillan": {"charityNumber": "261017", "charityName": "MACMILLAN CANCER SUPPORT", "registrationStatus": "Registered"},
             "age uk": {"charityNumber": "1128267", "charityName": "AGE UK", "registrationStatus": "Registered"},
             "shelter": {"charityNumber": "263710", "charityName": "SHELTER, NATIONAL CAMPAIGN FOR HOMELESS PEOPLE LIMITED", "registrationStatus": "Registered"},
+            "rspca": {"charityNumber": "219099", "charityName": "ROYAL SOCIETY FOR THE PREVENTION OF CRUELTY TO ANIMALS", "registrationStatus": "Registered"},
+            "rspb": {"charityNumber": "207076", "charityName": "ROYAL SOCIETY FOR THE PROTECTION OF BIRDS", "registrationStatus": "Registered"},
+            "wwf": {"charityNumber": "1081247", "charityName": "WWF-UK", "registrationStatus": "Registered"},
+            "world wildlife fund": {"charityNumber": "1081247", "charityName": "WWF-UK", "registrationStatus": "Registered"},
+            "unicef": {"charityNumber": "1072612", "charityName": "THE UNITED KINGDOM COMMITTEE FOR UNICEF", "registrationStatus": "Registered"},
+            "mind": {"charityNumber": "219830", "charityName": "MIND", "registrationStatus": "Registered"},
+            "samaritans": {"charityNumber": "219432", "charityName": "SAMARITANS", "registrationStatus": "Registered"},
+            "mencap": {"charityNumber": "222377", "charityName": "ROYAL MENCAP SOCIETY", "registrationStatus": "Registered"},
+            "scope": {"charityNumber": "208231", "charityName": "SCOPE", "registrationStatus": "Registered"},
+            "actionaid": {"charityNumber": "274467", "charityName": "ACTIONAID", "registrationStatus": "Registered"},
+            "christian aid": {"charityNumber": "1105851", "charityName": "CHRISTIAN AID", "registrationStatus": "Registered"},
+            "wateraid": {"charityNumber": "288701", "charityName": "WATERAID", "registrationStatus": "Registered"},
+            "tearfund": {"charityNumber": "265464", "charityName": "TEARFUND", "registrationStatus": "Registered"},
         }
         
         search_lower = search_term.lower().strip()
         results = []
+        seen_numbers = set()
         
-        for key, charity in mock_charities.items():
-            if search_lower in key or key in search_lower:
-                results.append(charity)
+        # Exact match first
+        if search_lower in known_charities:
+            charity = known_charities[search_lower]
+            results.append(charity)
+            seen_numbers.add(charity["charityNumber"])
         
-        # If no exact match, return partial matches
-        if not results:
-            for key, charity in mock_charities.items():
-                if any(word in key for word in search_lower.split()):
+        # Partial matches
+        for key, charity in known_charities.items():
+            if charity["charityNumber"] not in seen_numbers:
+                if search_lower in key or key in search_lower:
                     results.append(charity)
+                    seen_numbers.add(charity["charityNumber"])
         
-        logger.info("Mock search results", search_term=search_term, results_count=len(results))
+        # Word-based matches
+        if not results:
+            for key, charity in known_charities.items():
+                if charity["charityNumber"] not in seen_numbers:
+                    if any(word in key for word in search_lower.split() if len(word) > 3):
+                        results.append(charity)
+                        seen_numbers.add(charity["charityNumber"])
+        
+        logger.info("Name search results", search_term=search_term, results_count=len(results))
         return {"charities": results}
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
@@ -164,133 +182,53 @@ class CharityCommissionService:
         
         # Check if API key is configured
         if not self.api_key:
-            logger.warning("Charity Commission API key not configured - using mock data")
-            return self._get_mock_charity_details(normalized)
+            logger.warning("Charity Commission API key not configured")
+            return None
         
         client = await self.get_client()
         
         try:
-            response = await client.get(f"/charities/{normalized}")
+            # Use charityDetails endpoint for full info
+            response = await client.get(f"/charityDetails/{normalized}/0")
             if response.status_code == 404:
                 return None
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            
+            # Convert API response to our expected format
+            return {
+                "charityNumber": str(data.get("reg_charity_number", normalized)),
+                "charityName": data.get("charity_name"),
+                "registrationStatus": "Registered" if data.get("reg_status") == "R" else "Removed",
+                "registrationDate": data.get("date_of_registration"),
+                "removalDate": data.get("date_of_removal"),
+                "charityType": data.get("charity_type"),
+                "activities": data.get("activities"),
+                "contact": {
+                    "email": data.get("email"),
+                    "phone": data.get("phone"),
+                    "web": data.get("web"),
+                    "addressLine1": data.get("address_line_one"),
+                    "addressLine2": data.get("address_line_two"),
+                    "addressLine3": data.get("address_line_three"),
+                    "addressLine4": data.get("address_line_four"),
+                    "postcode": data.get("address_post_code"),
+                },
+                "latestIncome": data.get("latest_income"),
+                "latestExpenditure": data.get("latest_expenditure"),
+                "latestFinYearStart": data.get("latest_acc_fin_year_start_date"),
+                "latestFinYearEnd": data.get("latest_acc_fin_year_end_date"),
+                "companyNumber": data.get("charity_co_reg_number"),
+                "raw_data": data,
+            }
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
-                return self._get_mock_charity_details(normalized)
-            if e.response.status_code in [401, 403]:
-                logger.warning("API authentication failed - using mock data")
-                return self._get_mock_charity_details(normalized)
+                return None
             logger.error("Charity Commission API error", status_code=e.response.status_code, error=str(e))
             raise
         except Exception as e:
             logger.error("Charity Commission API error", error=str(e))
             raise
-    
-    def _get_mock_charity_details(self, charity_number: str) -> Optional[Dict[str, Any]]:
-        """Return mock charity details for demo/testing."""
-        mock_details = {
-            "220949": {
-                "charityNumber": "220949",
-                "charityName": "THE BRITISH RED CROSS SOCIETY",
-                "registrationStatus": "Registered",
-                "registrationDate": "1963-01-01T00:00:00Z",
-                "activities": "The British Red Cross helps people in crisis, whoever and wherever they are.",
-                "contact": {
-                    "email": "information@redcross.org.uk",
-                    "phone": "0344 871 11 11",
-                    "web": "https://www.redcross.org.uk",
-                    "addressLine1": "44 Moorfields",
-                    "addressLine2": "London",
-                    "postcode": "EC2Y 9AL"
-                }
-            },
-            "202918": {
-                "charityNumber": "202918",
-                "charityName": "OXFAM",
-                "registrationStatus": "Registered",
-                "registrationDate": "1962-01-01T00:00:00Z",
-                "activities": "Oxfam works to find solutions to poverty and injustice around the world.",
-                "contact": {
-                    "email": "enquiries@oxfam.org.uk",
-                    "phone": "0300 200 1300",
-                    "web": "https://www.oxfam.org.uk",
-                    "addressLine1": "Oxfam House",
-                    "addressLine2": "John Smith Drive",
-                    "addressLine3": "Oxford",
-                    "postcode": "OX4 2JY"
-                }
-            },
-            "1089464": {
-                "charityNumber": "1089464",
-                "charityName": "CANCER RESEARCH UK",
-                "registrationStatus": "Registered",
-                "registrationDate": "2002-02-04T00:00:00Z",
-                "activities": "Cancer Research UK is dedicated to saving lives through research, influence and information.",
-                "contact": {
-                    "email": "supporter.services@cancer.org.uk",
-                    "phone": "0300 123 1022",
-                    "web": "https://www.cancerresearchuk.org",
-                    "addressLine1": "2 Redman Place",
-                    "addressLine2": "London",
-                    "postcode": "E20 1JQ"
-                }
-            },
-            "216401": {
-                "charityNumber": "216401",
-                "charityName": "NATIONAL SOCIETY FOR THE PREVENTION OF CRUELTY TO CHILDREN",
-                "registrationStatus": "Registered",
-                "activities": "NSPCC is the leading children's charity fighting to end child abuse.",
-                "contact": {"web": "https://www.nspcc.org.uk"}
-            },
-            "213890": {
-                "charityNumber": "213890",
-                "charityName": "SAVE THE CHILDREN INTERNATIONAL",
-                "registrationStatus": "Registered",
-                "activities": "Save the Children fights for children's rights and delivers immediate and lasting improvements.",
-                "contact": {"web": "https://www.savethechildren.org.uk"}
-            },
-            "216250": {
-                "charityNumber": "216250",
-                "charityName": "BARNARDO'S",
-                "registrationStatus": "Registered",
-                "activities": "Barnardo's supports vulnerable children, young people and their families.",
-                "contact": {"web": "https://www.barnardos.org.uk"}
-            },
-            "207994": {
-                "charityNumber": "207994",
-                "charityName": "MARIE CURIE",
-                "registrationStatus": "Registered",
-                "activities": "Marie Curie provides care and support for people living with terminal illness.",
-                "contact": {"web": "https://www.mariecurie.org.uk"}
-            },
-            "261017": {
-                "charityNumber": "261017",
-                "charityName": "MACMILLAN CANCER SUPPORT",
-                "registrationStatus": "Registered",
-                "activities": "Macmillan Cancer Support provides specialist health care and support services.",
-                "contact": {"web": "https://www.macmillan.org.uk"}
-            },
-            "1128267": {
-                "charityNumber": "1128267",
-                "charityName": "AGE UK",
-                "registrationStatus": "Registered",
-                "activities": "Age UK helps everyone make the most of later life.",
-                "contact": {"web": "https://www.ageuk.org.uk"}
-            },
-            "263710": {
-                "charityNumber": "263710",
-                "charityName": "SHELTER, NATIONAL CAMPAIGN FOR HOMELESS PEOPLE LIMITED",
-                "registrationStatus": "Registered",
-                "activities": "Shelter helps millions of people struggling with bad housing or homelessness.",
-                "contact": {"web": "https://www.shelter.org.uk"}
-            },
-        }
-        
-        result = mock_details.get(charity_number)
-        if result:
-            logger.info("Mock charity details", charity_number=charity_number)
-        return result
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def get_charity_trustees(self, charity_number: str) -> List[Dict[str, Any]]:
@@ -303,23 +241,27 @@ class CharityCommissionService:
         Returns:
             List of trustee records
         """
+        if not self.api_key:
+            return []
+            
         client = await self.get_client()
         normalized = self.normalize_charity_number(charity_number)
         
         try:
-            response = await client.get(f"/charities/{normalized}/trustees")
+            response = await client.get(f"/charityTrustees/{normalized}/0")
             if response.status_code == 404:
                 return []
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            return data if isinstance(data, list) else []
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 return []
             logger.error("Charity Commission API error", status_code=e.response.status_code, error=str(e))
-            raise
+            return []
         except Exception as e:
             logger.error("Charity Commission API error", error=str(e))
-            raise
+            return []
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def get_charity_accounts(self, charity_number: str) -> List[Dict[str, Any]]:
@@ -332,23 +274,8 @@ class CharityCommissionService:
         Returns:
             List of account records
         """
-        client = await self.get_client()
-        normalized = self.normalize_charity_number(charity_number)
-        
-        try:
-            response = await client.get(f"/charities/{normalized}/accounts")
-            if response.status_code == 404:
-                return []
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                return []
-            logger.error("Charity Commission API error", status_code=e.response.status_code, error=str(e))
-            raise
-        except Exception as e:
-            logger.error("Charity Commission API error", error=str(e))
-            raise
+        # Financial data is included in charityDetails response
+        return []
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def get_charity_subsidiaries(self, charity_number: str) -> List[Dict[str, Any]]:
@@ -361,27 +288,31 @@ class CharityCommissionService:
         Returns:
             List of subsidiary records
         """
+        if not self.api_key:
+            return []
+            
         client = await self.get_client()
         normalized = self.normalize_charity_number(charity_number)
         
         try:
-            response = await client.get(f"/charities/{normalized}/subsidiaries")
+            response = await client.get(f"/charitySubsidiaries/{normalized}/0")
             if response.status_code == 404:
                 return []
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            return data if isinstance(data, list) else []
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 return []
             logger.error("Charity Commission API error", status_code=e.response.status_code, error=str(e))
-            raise
+            return []
         except Exception as e:
             logger.error("Charity Commission API error", error=str(e))
-            raise
+            return []
     
     async def get_full_charity_details(self, charity_number: str) -> Optional[Dict[str, Any]]:
         """
-        Get comprehensive charity details including trustees and accounts.
+        Get comprehensive charity details including trustees and subsidiaries.
         
         Args:
             charity_number: Charity registration number
@@ -390,10 +321,9 @@ class CharityCommissionService:
             Dict containing full charity details
         """
         # Fetch all data concurrently
-        charity_data, trustees, accounts, subsidiaries = await asyncio.gather(
+        charity_data, trustees, subsidiaries = await asyncio.gather(
             self.get_charity_by_number(charity_number),
             self.get_charity_trustees(charity_number),
-            self.get_charity_accounts(charity_number),
             self.get_charity_subsidiaries(charity_number),
             return_exceptions=True,
         )
@@ -403,7 +333,6 @@ class CharityCommissionService:
         
         # Add related data
         charity_data["trustees"] = trustees if not isinstance(trustees, Exception) else []
-        charity_data["accounts"] = accounts if not isinstance(accounts, Exception) else []
         charity_data["subsidiaries"] = subsidiaries if not isinstance(subsidiaries, Exception) else []
         
         return charity_data
@@ -431,8 +360,8 @@ class CharityCommissionService:
             "contact_phone": None,
             "website": None,
             "address": None,
-            "latest_income": None,
-            "latest_expenditure": None,
+            "latest_income": data.get("latestIncome"),
+            "latest_expenditure": data.get("latestExpenditure"),
             "financial_year_end": None,
             "trustees": [],
             "subsidiaries": [],
@@ -441,17 +370,21 @@ class CharityCommissionService:
         # Parse dates
         if data.get("registrationDate"):
             try:
-                parsed["registration_date"] = datetime.fromisoformat(
-                    data["registrationDate"].replace("Z", "+00:00")
-                )
+                date_str = data["registrationDate"]
+                if isinstance(date_str, str):
+                    parsed["registration_date"] = datetime.fromisoformat(
+                        date_str.replace("Z", "+00:00")
+                    )
             except (ValueError, TypeError):
                 pass
         
         if data.get("removalDate"):
             try:
-                parsed["removal_date"] = datetime.fromisoformat(
-                    data["removalDate"].replace("Z", "+00:00")
-                )
+                date_str = data["removalDate"]
+                if isinstance(date_str, str):
+                    parsed["removal_date"] = datetime.fromisoformat(
+                        date_str.replace("Z", "+00:00")
+                    )
             except (ValueError, TypeError):
                 pass
         
@@ -468,38 +401,35 @@ class CharityCommissionService:
                 address_parts.append(contact[key])
         parsed["address"] = ", ".join(address_parts) if address_parts else None
         
-        # Parse financial data from accounts
-        accounts = data.get("accounts", [])
-        if accounts:
-            latest_account = accounts[0]  # Assume sorted by date
-            parsed["latest_income"] = latest_account.get("totalGrossIncome")
-            parsed["latest_expenditure"] = latest_account.get("totalGrossExpenditure")
-            if latest_account.get("financialYearEnd"):
-                try:
+        # Parse financial year end
+        if data.get("latestFinYearEnd"):
+            try:
+                date_str = data["latestFinYearEnd"]
+                if isinstance(date_str, str):
                     parsed["financial_year_end"] = datetime.fromisoformat(
-                        latest_account["financialYearEnd"].replace("Z", "+00:00")
+                        date_str.replace("Z", "+00:00")
                     )
-                except (ValueError, TypeError):
-                    pass
+            except (ValueError, TypeError):
+                pass
         
         # Parse trustees
         trustees = data.get("trustees", [])
         parsed["trustees"] = [
             {
-                "name": t.get("trusteeName"),
-                "id": t.get("trusteeId"),
+                "name": t.get("trustee_name") or t.get("trusteeName"),
+                "id": t.get("trustee_id") or t.get("trusteeId"),
             }
-            for t in trustees
+            for t in trustees if isinstance(t, dict)
         ]
         
         # Parse subsidiaries
         subsidiaries = data.get("subsidiaries", [])
         parsed["subsidiaries"] = [
             {
-                "name": s.get("subsidiaryName"),
-                "company_number": s.get("companyNumber"),
+                "name": s.get("subsidiary_name") or s.get("subsidiaryName"),
+                "company_number": s.get("company_number") or s.get("companyNumber"),
             }
-            for s in subsidiaries
+            for s in subsidiaries if isinstance(s, dict)
         ]
         
         return parsed
