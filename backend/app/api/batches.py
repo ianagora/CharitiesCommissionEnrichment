@@ -57,10 +57,12 @@ def parse_upload_file(file_content: bytes, filename: str) -> pd.DataFrame:
 
 @router.post("", response_model=EntityBatchResponse, status_code=status.HTTP_201_CREATED)
 async def create_batch(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     name: str = Form(...),
     description: Optional[str] = Form(None),
     name_column: str = Form("name"),  # Column containing entity names
+    auto_process: bool = Form(True),  # Auto-start processing after upload
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -155,6 +157,24 @@ async def create_batch(
         user_id=str(current_user.id),
         total_records=batch.total_records,
     )
+    
+    # Auto-start processing if requested (default: True)
+    if auto_process:
+        batch.status = BatchStatus.PROCESSING
+        await db.flush()
+        
+        background_tasks.add_task(
+            process_batch_background,
+            batch.id,
+            False,  # use_ai - disabled for faster processing
+            False,  # build_ownership
+            3,      # max_depth
+        )
+        
+        logger.info(
+            "Auto-processing started for batch",
+            batch_id=str(batch.id),
+        )
     
     return batch
 

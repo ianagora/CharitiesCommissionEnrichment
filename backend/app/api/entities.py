@@ -198,7 +198,6 @@ async def get_entity(
     """Get entity details."""
     result = await db.execute(
         select(Entity)
-        
         .where(Entity.id == entity_id)
     )
     entity = result.scalar_one_or_none()
@@ -221,7 +220,47 @@ async def get_entity(
             detail="Entity not found",
         )
     
-    return EntityResponse.model_validate(entity)
+    # Get resolutions for this entity
+    resolutions_result = await db.execute(
+        select(EntityResolution)
+        .where(EntityResolution.entity_id == entity_id)
+        .order_by(EntityResolution.confidence_score.desc())
+    )
+    resolutions = resolutions_result.scalars().all()
+    
+    # Build response manually to avoid dynamic relationship issues
+    entity_dict = {
+        "id": entity.id,
+        "batch_id": entity.batch_id,
+        "original_name": entity.original_name,
+        "original_data": entity.original_data,
+        "row_number": entity.row_number,
+        "entity_type": entity.entity_type,
+        "resolved_name": entity.resolved_name,
+        "charity_number": entity.charity_number,
+        "company_number": entity.company_number,
+        "charity_status": entity.charity_status,
+        "charity_registration_date": entity.charity_registration_date,
+        "charity_activities": entity.charity_activities,
+        "charity_contact_email": entity.charity_contact_email,
+        "charity_website": entity.charity_website,
+        "charity_address": entity.charity_address,
+        "latest_income": entity.latest_income,
+        "latest_expenditure": entity.latest_expenditure,
+        "latest_financial_year_end": entity.latest_financial_year_end,
+        "resolution_status": entity.resolution_status,
+        "resolution_confidence": entity.resolution_confidence,
+        "resolution_method": entity.resolution_method,
+        "parent_entity_id": entity.parent_entity_id,
+        "ownership_level": entity.ownership_level,
+        "enriched_data": entity.enriched_data,
+        "created_at": entity.created_at,
+        "updated_at": entity.updated_at,
+        "resolved_at": entity.resolved_at,
+        "resolutions": [EntityResolutionResponse.model_validate(r) for r in resolutions] if resolutions else None,
+    }
+    
+    return EntityResponse.model_validate(entity_dict)
 
 
 @router.patch("/{entity_id}", response_model=EntityResponse)
