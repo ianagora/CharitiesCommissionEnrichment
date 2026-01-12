@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "charity-data-enrichment",
+  "compatibility_date": "2024-01-01",
+  "pages_build_output_dir": "./dist",
+  "compatibility_flags": ["nodejs_compat"],
+  
+  // Environment variables - set API_BASE_URL in Cloudflare dashboard
+  // For production: https://your-backend.railway.app
+  "vars": {
+    "API_BASE_URL": "http://localhost:8000"
+  }
+}

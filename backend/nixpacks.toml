@@ -1,0 +1,17 @@
+[phases.setup]
+nixPkgs = ["python311", "gcc", "libffi", "openssl"]
+
+[phases.install]
+cmds = [
+    "pip install --upgrade pip",
+    "pip install -r requirements.txt"
+]
+
+[phases.build]
+cmds = []
+
+[start]
+cmd = "gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --timeout 120"
+
+[variables]
+PYTHON_VERSION = "3.11"

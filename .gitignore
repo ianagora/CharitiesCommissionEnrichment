@@ -1,0 +1,68 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+
+# Environment
+.env
+.env.local
+.env.*.local
+.dev.vars
+venv/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+logs/
+
+# Wrangler / Cloudflare
+.wrangler/
+
+# Railway
+.railway/
+
+# Testing
+coverage/
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# Alembic
+alembic/versions/*.pyc
+
+# Temporary
+temp/
+tmp/
+*.tmp
+*.bak
+*.backup
+
+# Uploads
+uploads/
+
+# Secrets
+*.pem
+*.key
+secrets/

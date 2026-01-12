@@ -1,0 +1,43 @@
+"""User model for authentication."""
+import uuid
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import Boolean, Column, DateTime, String, Text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+
+from app.database import Base
+
+
+class User(Base):
+    """User model for authentication and authorization."""
+    
+    __tablename__ = "users"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(255), nullable=True)
+    organization = Column(String(255), nullable=True)
+    
+    # Status
+    is_active = Column(Boolean, default=True, nullable=False)
+    is_superuser = Column(Boolean, default=False, nullable=False)
+    is_verified = Column(Boolean, default=False, nullable=False)
+    
+    # API access
+    api_key = Column(String(64), unique=True, index=True, nullable=True)
+    api_key_created_at = Column(DateTime, nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    last_login_at = Column(DateTime, nullable=True)
+    
+    # Relationships
+    batches = relationship("EntityBatch", back_populates="user", lazy="dynamic")
+    audit_logs = relationship("AuditLog", back_populates="user", lazy="dynamic")
+    
+    def __repr__(self) -> str:
+        return f"<User {self.email}>"
