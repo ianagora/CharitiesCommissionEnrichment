@@ -383,53 +383,68 @@ Be conservative - only match if confident it's the same organization."""
         print(f"[DEBUG] Updated batch status to PROCESSING", file=sys.stderr, flush=True)
         
         try:
-            # Get all entities in batch
+            # Get all entities in batch (both pending and those needing review)
             result = await self.db.execute(
                 select(Entity)
                 .where(Entity.batch_id == batch_id)
-                .where(Entity.resolution_status == ResolutionStatus.PENDING)
+                .where(Entity.resolution_status.in_([
+                    ResolutionStatus.PENDING,
+                    ResolutionStatus.MANUAL_REVIEW,
+                    ResolutionStatus.MULTIPLE_MATCHES,
+                ]))
             )
             entities = result.scalars().all()
             
-            print(f"[DEBUG] Found {len(entities)} pending entities to process", file=sys.stderr, flush=True)
+            print(f"[DEBUG] Found {len(entities)} entities to process", file=sys.stderr, flush=True)
             
-            batch.total_records = len(entities)
+            if len(entities) == 0:
+                print(f"[DEBUG] No entities to process, marking batch as completed", file=sys.stderr, flush=True)
+                batch.status = BatchStatus.COMPLETED
+                batch.processing_completed_at = datetime.utcnow()
+                await self.db.flush()
+                return batch
+            
+            # Get total count of all entities (not just pending)
+            total_result = await self.db.execute(
+                select(Entity).where(Entity.batch_id == batch_id)
+            )
+            all_entities = total_result.scalars().all()
+            batch.total_records = len(all_entities)
+            
+            # Count already matched entities
+            already_matched = sum(1 for e in all_entities if e.resolution_status == ResolutionStatus.MATCHED)
+            
             processed = 0
-            matched = 0
+            matched = already_matched
             failed = 0
             
-            # Process in batches with concurrency control
-            semaphore = asyncio.Semaphore(max_concurrent)
+            # Process ONE AT A TIME to avoid connection issues
+            print(f"[DEBUG] Processing entities sequentially to avoid connection issues", file=sys.stderr, flush=True)
             
-            async def process_with_semaphore(entity: Entity):
-                nonlocal processed, matched, failed
-                async with semaphore:
-                    try:
-                        print(f"[DEBUG] Processing entity: {entity.original_name}", file=sys.stderr, flush=True)
-                        await self.resolve_entity(entity, use_ai=use_ai)
-                        if entity.resolution_status == ResolutionStatus.MATCHED:
-                            matched += 1
-                            print(f"[DEBUG] Entity MATCHED: {entity.original_name} -> {entity.resolved_name}", file=sys.stderr, flush=True)
-                        else:
-                            print(f"[DEBUG] Entity status: {entity.resolution_status}", file=sys.stderr, flush=True)
-                    except Exception as e:
-                        print(f"[DEBUG] Entity resolution ERROR for {entity.original_name}: {str(e)}", file=sys.stderr, flush=True)
-                        print(f"[DEBUG] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
-                        logger.error("Entity resolution error", entity_id=str(entity.id), error=str(e))
-                        entity.resolution_status = ResolutionStatus.NO_MATCH
-                        failed += 1
-                    finally:
-                        processed += 1
-                        batch.processed_records = processed
-                        batch.matched_records = matched
-                        batch.failed_records = failed
-                        if processed % 10 == 0:
-                            await self.db.flush()
-                            print(f"[DEBUG] Progress: {processed}/{len(entities)} processed, {matched} matched, {failed} failed", file=sys.stderr, flush=True)
-            
-            # Process all entities concurrently
-            print(f"[DEBUG] Starting concurrent processing with max_concurrent={max_concurrent}", file=sys.stderr, flush=True)
-            await asyncio.gather(*[process_with_semaphore(e) for e in entities])
+            for entity in entities:
+                try:
+                    print(f"[DEBUG] Processing entity {processed + 1}/{len(entities)}: {entity.original_name}", file=sys.stderr, flush=True)
+                    await self.resolve_entity(entity, use_ai=use_ai)
+                    if entity.resolution_status == ResolutionStatus.MATCHED:
+                        matched += 1
+                        print(f"[DEBUG] Entity MATCHED: {entity.original_name} -> {entity.resolved_name}", file=sys.stderr, flush=True)
+                    else:
+                        print(f"[DEBUG] Entity status: {entity.resolution_status}", file=sys.stderr, flush=True)
+                except Exception as e:
+                    print(f"[DEBUG] Entity resolution ERROR for {entity.original_name}: {str(e)}", file=sys.stderr, flush=True)
+                    print(f"[DEBUG] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                    logger.error("Entity resolution error", entity_id=str(entity.id), error=str(e))
+                    entity.resolution_status = ResolutionStatus.MANUAL_REVIEW
+                    entity.resolved_at = datetime.utcnow()
+                    failed += 1
+                finally:
+                    processed += 1
+                    batch.processed_records = already_matched + processed
+                    batch.matched_records = matched
+                    batch.failed_records = failed
+                    # Flush after each entity to save progress
+                    await self.db.flush()
+                    print(f"[DEBUG] Progress: {processed}/{len(entities)} processed, {matched} matched, {failed} failed", file=sys.stderr, flush=True)
             
             print(f"[DEBUG] All entities processed. Total: {processed}, Matched: {matched}, Failed: {failed}", file=sys.stderr, flush=True)
             

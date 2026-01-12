@@ -173,6 +173,9 @@ function showBatchDetail(batchId) {
 }
 
 // Batch functions
+// Store dashboard polling interval
+let dashboardPollInterval = null;
+
 async function loadBatches() {
     try {
         const response = await api.get('/batches');
@@ -182,17 +185,31 @@ async function loadBatches() {
         let totalEntities = 0;
         let totalMatched = 0;
         let totalPending = 0;
+        let hasProcessingBatch = false;
         
         batches.forEach(batch => {
             totalEntities += batch.total_records || 0;
             totalMatched += batch.matched_records || 0;
             totalPending += (batch.total_records || 0) - (batch.processed_records || 0);
+            if (batch.status === 'processing') {
+                hasProcessingBatch = true;
+            }
         });
         
         document.getElementById('stat-batches').textContent = batches.length;
         document.getElementById('stat-entities').textContent = totalEntities;
         document.getElementById('stat-matched').textContent = totalMatched;
         document.getElementById('stat-pending').textContent = totalPending;
+        
+        // Auto-refresh dashboard if any batch is processing
+        if (hasProcessingBatch && !dashboardPollInterval) {
+            dashboardPollInterval = setInterval(() => {
+                loadBatches();
+            }, 3000);  // Refresh every 3 seconds
+        } else if (!hasProcessingBatch && dashboardPollInterval) {
+            clearInterval(dashboardPollInterval);
+            dashboardPollInterval = null;
+        }
         
         // Render table
         const tbody = document.getElementById('batches-table');
@@ -216,13 +233,13 @@ async function loadBatches() {
                 </td>
                 <td class="px-4 py-3">
                     <span class="px-2 py-1 rounded-full text-xs font-medium ${getStatusClass(batch.status)}">
-                        ${batch.status}
+                        ${batch.status}${batch.status === 'processing' ? ' <i class="fas fa-spinner fa-spin ml-1"></i>' : ''}
                     </span>
                 </td>
                 <td class="px-4 py-3">
                     <div class="flex items-center">
                         <div class="w-24 bg-gray-200 rounded-full h-2 mr-2">
-                            <div class="bg-green-600 h-2 rounded-full" style="width: ${getProgressPercent(batch)}%"></div>
+                            <div class="bg-green-600 h-2 rounded-full transition-all duration-300" style="width: ${getProgressPercent(batch)}%"></div>
                         </div>
                         <span class="text-sm text-gray-600">${batch.matched_records}/${batch.total_records}</span>
                     </div>
