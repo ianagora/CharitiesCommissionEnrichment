@@ -129,6 +129,16 @@ async def log_requests(request: Request, call_next):
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Handle unexpected exceptions."""
+    import sys
+    import traceback
+    
+    error_id = datetime.utcnow().isoformat()
+    
+    # Print to stderr for Railway logs
+    print(f"[ERROR {error_id}] Unhandled exception in {request.method} {request.url.path}", file=sys.stderr, flush=True)
+    print(f"[ERROR {error_id}] {type(exc).__name__}: {str(exc)}", file=sys.stderr, flush=True)
+    print(f"[ERROR {error_id}] Traceback:\n{traceback.format_exc()}", file=sys.stderr, flush=True)
+    
     logger.error(
         "Unhandled exception",
         path=request.url.path,
@@ -141,7 +151,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
             "detail": "An unexpected error occurred",
-            "error_id": datetime.utcnow().isoformat(),
+            "error_id": error_id,
         },
     )
 
