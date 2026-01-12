@@ -28,8 +28,9 @@ class CharityCommissionService:
     API Documentation: https://api-portal.charitycommission.gov.uk/
     
     Available endpoints:
-    - /charityRegNumber/{regNumber}/{suffix} - Get charity by registration number
-    - /charityDetails/{regNumber}/{suffix} - Get detailed charity info
+    - /charityDetails/{regNumber}/{suffix} - Get basic charity info
+    - /allcharitydetails/{RegisteredNumber}/{suffix} - Get extended details INCLUDING TRUSTEES
+    - /charitySubsidiaries/{regNumber}/{suffix} - Get subsidiaries
     """
     
     BASE_URL = settings.CHARITY_COMMISSION_API_BASE_URL
@@ -249,37 +250,57 @@ class CharityCommissionService:
             raise
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    async def get_charity_trustees(self, charity_number: str) -> List[Dict[str, Any]]:
+    async def get_all_charity_details(self, charity_number: str) -> Optional[Dict[str, Any]]:
         """
-        Get trustees for a charity.
+        Get extended charity details INCLUDING trustees, classifications, and areas of operation.
+        
+        Uses the /allcharitydetails/{RegisteredNumber}/{suffix} endpoint.
         
         Args:
             charity_number: Charity registration number
         
         Returns:
-            List of trustee records
+            Dict containing extended charity details including trustees, or None if not found
         """
+        normalized = self.normalize_charity_number(charity_number)
+        api_log(f"get_all_charity_details: fetching extended details with trustees for #{normalized}", charity_number=normalized)
+        
         if not self.api_key:
-            return []
+            api_log("API key not configured - cannot fetch extended charity details", charity_number=normalized, level="WARNING")
+            return None
             
         client = await self.get_client()
-        normalized = self.normalize_charity_number(charity_number)
         
         try:
-            response = await client.get(f"/charityTrustees/{normalized}/0")
+            start_time = datetime.utcnow()
+            api_log(f"Calling API: GET /allcharitydetails/{normalized}/0", charity_number=normalized)
+            response = await client.get(f"/allcharitydetails/{normalized}/0")
+            duration = (datetime.utcnow() - start_time).total_seconds()
+            
             if response.status_code == 404:
-                return []
+                api_log(f"API returned 404 (not found) in {duration:.2f}s", charity_number=normalized)
+                return None
+            
             response.raise_for_status()
             data = response.json()
-            return data if isinstance(data, list) else []
+            
+            # Log what we got
+            trustees_count = len(data.get("trustees", [])) if isinstance(data.get("trustees"), list) else 0
+            api_log(f"API SUCCESS in {duration:.2f}s: charity_name='{data.get('charity_name', 'N/A')}', trustees_count={trustees_count}", charity_number=normalized)
+            
+            return data
+            
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
-                return []
+                api_log(f"Extended details not found (404)", charity_number=normalized)
+                return None
+            api_log(f"API error: {e.response.status_code}", charity_number=normalized, level="ERROR")
             logger.error("Charity Commission API error", status_code=e.response.status_code, error=str(e))
-            return []
+            return None
         except Exception as e:
+            api_log(f"API exception: {str(e)}", charity_number=normalized, level="ERROR")
             logger.error("Charity Commission API error", error=str(e))
-            return []
+            return None
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def get_charity_accounts(self, charity_number: str) -> List[Dict[str, Any]]:
@@ -332,25 +353,103 @@ class CharityCommissionService:
         """
         Get comprehensive charity details including trustees and subsidiaries.
         
+        Uses the /allcharitydetails endpoint which includes trustees directly,
+        and also fetches subsidiaries separately.
+        
         Args:
             charity_number: Charity registration number
         
         Returns:
             Dict containing full charity details
         """
-        # Fetch all data concurrently
-        charity_data, trustees, subsidiaries = await asyncio.gather(
-            self.get_charity_by_number(charity_number),
-            self.get_charity_trustees(charity_number),
+        normalized = self.normalize_charity_number(charity_number)
+        api_log(f"get_full_charity_details: fetching comprehensive data for #{normalized}", charity_number=normalized)
+        
+        # Try the extended endpoint first (includes trustees)
+        all_details, subsidiaries = await asyncio.gather(
+            self.get_all_charity_details(charity_number),
             self.get_charity_subsidiaries(charity_number),
             return_exceptions=True,
         )
         
-        if charity_data is None or isinstance(charity_data, Exception):
+        # If extended endpoint worked, use that data
+        if all_details and not isinstance(all_details, Exception):
+            # Convert to our expected format
+            # Extract trustees from trustee_names field (the actual field name from API)
+            raw_trustees = all_details.get("trustee_names", [])
+            trustees = []
+            if isinstance(raw_trustees, list):
+                for t in raw_trustees:
+                    if isinstance(t, dict) and t.get("trustee_name"):
+                        trustees.append({
+                            "name": t.get("trustee_name"),
+                            "organisation_number": t.get("organisation_number"),
+                        })
+            
+            # Extract classifications from who_what_where field
+            classifications = all_details.get("who_what_where", [])
+            what_classifications = [c.get("classification_desc") for c in classifications if c.get("classification_type") == "What"]
+            who_classifications = [c.get("classification_desc") for c in classifications if c.get("classification_type") == "Who"]
+            how_classifications = [c.get("classification_desc") for c in classifications if c.get("classification_type") == "How"]
+            
+            # Extract other names
+            other_names = [n.get("other_name") for n in all_details.get("other_names", []) if n.get("other_name")]
+            
+            charity_data = {
+                "charityNumber": str(all_details.get("reg_charity_number") or all_details.get("registered_charity_number") or normalized),
+                "charityName": all_details.get("charity_name"),
+                "registrationStatus": "Registered" if all_details.get("reg_status") == "R" else "Removed",
+                "registrationDate": all_details.get("date_of_registration"),
+                "removalDate": all_details.get("date_of_removal"),
+                "charityType": all_details.get("charity_type"),
+                "activities": all_details.get("activities"),
+                "contact": {
+                    "email": all_details.get("email"),
+                    "phone": all_details.get("phone"),
+                    "web": all_details.get("web"),
+                    "addressLine1": all_details.get("address_line_one"),
+                    "addressLine2": all_details.get("address_line_two"),
+                    "addressLine3": all_details.get("address_line_three"),
+                    "addressLine4": all_details.get("address_line_four"),
+                    "postcode": all_details.get("address_post_code"),
+                },
+                "latestIncome": all_details.get("latest_income"),
+                "latestExpenditure": all_details.get("latest_expenditure"),
+                "latestFinYearStart": all_details.get("latest_acc_fin_year_start_date"),
+                "latestFinYearEnd": all_details.get("latest_acc_fin_year_end_date"),
+                "companyNumber": all_details.get("charity_co_reg_number"),
+                "raw_data": all_details,
+                # Trustees from trustee_names field
+                "trustees": trustees,
+                "subsidiaries": subsidiaries if not isinstance(subsidiaries, Exception) else [],
+                # Additional data from allcharitydetails endpoint
+                "otherNames": other_names,
+                "classifications": {
+                    "what": what_classifications,
+                    "who": who_classifications,
+                    "how": how_classifications,
+                },
+                "constituency": all_details.get("constituency_name"),
+                "areasOfOperation": {
+                    "regions": all_details.get("CharityAoORegion", []),
+                    "localAuthorities": all_details.get("CharityAoOLocalAuthority", []),
+                    "countryContinent": all_details.get("CharityAoOCountryContinent", []),
+                },
+            }
+            
+            trustees_count = len(charity_data.get("trustees", []))
+            api_log(f"Full details retrieved: {charity_data['charityName']}, trustees={trustees_count}", charity_number=normalized)
+            return charity_data
+        
+        # Fallback to basic endpoint if extended fails
+        api_log(f"Extended endpoint failed, falling back to basic endpoint", charity_number=normalized, level="WARNING")
+        charity_data = await self.get_charity_by_number(charity_number)
+        
+        if charity_data is None:
             return None
         
-        # Add related data
-        charity_data["trustees"] = trustees if not isinstance(trustees, Exception) else []
+        # Add subsidiaries (no trustees available from basic endpoint)
+        charity_data["trustees"] = []
         charity_data["subsidiaries"] = subsidiaries if not isinstance(subsidiaries, Exception) else []
         
         return charity_data
@@ -430,15 +529,18 @@ class CharityCommissionService:
             except (ValueError, TypeError):
                 pass
         
-        # Parse trustees
-        trustees = data.get("trustees", [])
-        parsed["trustees"] = [
-            {
-                "name": t.get("trustee_name") or t.get("trusteeName"),
-                "id": t.get("trustee_id") or t.get("trusteeId"),
-            }
-            for t in trustees if isinstance(t, dict)
-        ]
+        # Parse trustees (can come from 'trustees' or 'trustee_names' field)
+        trustees = data.get("trustees", []) or data.get("trustee_names", [])
+        parsed["trustees"] = []
+        if isinstance(trustees, list):
+            for t in trustees:
+                if isinstance(t, dict):
+                    name = t.get("name") or t.get("trustee_name") or t.get("trusteeName")
+                    if name:
+                        parsed["trustees"].append({
+                            "name": name,
+                            "id": t.get("id") or t.get("trustee_id") or t.get("trusteeId") or t.get("organisation_number"),
+                        })
         
         # Parse subsidiaries
         subsidiaries = data.get("subsidiaries", [])
