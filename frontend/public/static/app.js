@@ -257,19 +257,27 @@ async function handleUpload(event) {
     formData.append('description', document.getElementById('batch-description').value);
     formData.append('name_column', document.getElementById('name-column').value);
     formData.append('file', document.getElementById('batch-file').files[0]);
+    formData.append('auto_process', 'true');  // Auto-start processing
     
     const btn = document.getElementById('upload-btn');
     btn.disabled = true;
-    btn.innerHTML = '<div class="loader inline-block mr-2"></div>Uploading...';
+    btn.innerHTML = '<div class="loader inline-block mr-2"></div>Uploading & Processing...';
     
     try {
-        await api.post('/batches', formData, {
+        const response = await api.post('/batches', formData, {
             headers: { 'Content-Type': 'multipart/form-data' }
         });
         
         document.getElementById('upload-form').reset();
         loadBatches();
-        alert('Batch uploaded successfully!');
+        
+        // Show success and open batch detail to show progress
+        alert('Batch uploaded! Processing has started automatically. Click on the batch to see progress.');
+        
+        // Automatically open the batch detail view
+        if (response.data && response.data.id) {
+            showBatchDetail(response.data.id);
+        }
     } catch (error) {
         alert(error.response?.data?.detail || 'Upload failed');
     } finally {
@@ -289,7 +297,16 @@ async function deleteBatch(batchId) {
     }
 }
 
+// Store polling interval globally so we can clear it
+let batchPollInterval = null;
+
 async function loadBatchDetail(batchId) {
+    // Clear any existing polling
+    if (batchPollInterval) {
+        clearInterval(batchPollInterval);
+        batchPollInterval = null;
+    }
+    
     try {
         const response = await api.get(`/batches/${batchId}`);
         const batch = response.data;
@@ -315,6 +332,28 @@ async function loadBatchDetail(batchId) {
         if (batch.status === 'processing') {
             processBtn.disabled = true;
             processBtn.innerHTML = '<div class="loader inline-block mr-2"></div>Processing...';
+            
+            // Start polling for updates while processing
+            batchPollInterval = setInterval(async () => {
+                try {
+                    const pollResponse = await api.get(`/batches/${batchId}`);
+                    const pollBatch = pollResponse.data;
+                    
+                    document.getElementById('batch-matched').textContent = pollBatch.matched_records;
+                    document.getElementById('batch-pending').textContent = pollBatch.total_records - pollBatch.processed_records;
+                    
+                    if (pollBatch.status !== 'processing') {
+                        clearInterval(batchPollInterval);
+                        batchPollInterval = null;
+                        loadBatchDetail(batchId);  // Reload full details
+                        loadEntities(batchId);     // Reload entities
+                    }
+                } catch (e) {
+                    console.error('Polling error:', e);
+                    clearInterval(batchPollInterval);
+                    batchPollInterval = null;
+                }
+            }, 2000);  // Poll every 2 seconds
         } else {
             processBtn.disabled = false;
             processBtn.innerHTML = '<i class="fas fa-play mr-2"></i>Process';
