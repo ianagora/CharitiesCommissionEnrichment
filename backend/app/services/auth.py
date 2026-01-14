@@ -63,21 +63,25 @@ class AuthService:
         user_id: UUID,
         token_version: int = 0,
         family_id: Optional[str] = None,
-    ) -> Tuple[str, str]:
+    ) -> Tuple[str, str, str]:
         """
         Create a JWT refresh token with rotation support.
         
         Refresh token rotation:
         - Each refresh token belongs to a "family" (chain of rotated tokens)
-        - When a refresh token is used, a new one is issued with the same family
-        - If an old token from the same family is reused, the entire family is invalidated
+        - Each token has a unique JTI (token ID)
+        - Only the most recent token (tracked by JTI) is valid
+        - If an old token is reused, all tokens are invalidated (security measure)
         
         Returns:
-            Tuple of (refresh_token, family_id)
+            Tuple of (refresh_token, family_id, jti)
         """
         # Generate new family ID if not provided (new login)
         if not family_id:
             family_id = secrets.token_urlsafe(32)
+        
+        # Generate unique token ID for this specific token
+        jti = secrets.token_urlsafe(16)
         
         expire = datetime.utcnow() + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
         to_encode = {
@@ -86,10 +90,10 @@ class AuthService:
             "type": "refresh",
             "ver": token_version,  # Token version for invalidation
             "fam": family_id,  # Token family for rotation tracking
-            "jti": secrets.token_urlsafe(16),  # Unique token ID
+            "jti": jti,  # Unique token ID - only this token is valid
         }
         token = jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
-        return token, family_id
+        return token, family_id, jti
     
     @classmethod
     def decode_token(cls, token: str) -> Optional[TokenData]:
@@ -101,6 +105,7 @@ class AuthService:
             is_superuser = payload.get("is_superuser", False)
             token_version = payload.get("ver", 0)
             token_family = payload.get("fam")
+            token_jti = payload.get("jti")  # Unique token ID
             
             if user_id is None:
                 return None
@@ -111,6 +116,7 @@ class AuthService:
                 is_superuser=is_superuser,
                 token_version=token_version,
                 token_family=token_family,
+                token_jti=token_jti,
             )
         except JWTError:
             return None
@@ -195,6 +201,10 @@ class AuthService:
         """
         Validate a refresh token and check for token reuse.
         
+        Implements strict refresh token rotation:
+        - Only the most recently issued refresh token is valid
+        - Reuse of any old token invalidates all tokens (security measure)
+        
         Returns:
             Tuple of (is_valid, user, error_message)
         """
@@ -221,17 +231,31 @@ class AuthService:
             )
             return False, None, "Token has been invalidated"
         
-        # Check token family matches (for refresh token rotation)
-        if token_data.token_family:
-            if user.refresh_token_family and user.refresh_token_family != token_data.token_family:
-                # Different family - this is a reused old token!
+        # Check token JTI matches the current valid token
+        # This is the key check for refresh token rotation - only ONE token is valid
+        if token_data.token_jti:
+            if user.current_refresh_jti and user.current_refresh_jti != token_data.token_jti:
+                # Different JTI - this is an old/reused token!
                 logger.error(
                     "Refresh token reuse detected - invalidating all tokens",
                     user_id=str(user.id),
-                    token_family=token_data.token_family,
-                    current_family=user.refresh_token_family,
+                    token_jti=token_data.token_jti[:8] + "..." if token_data.token_jti else None,
+                    current_jti=user.current_refresh_jti[:8] + "..." if user.current_refresh_jti else None,
                 )
                 # Invalidate all tokens for this user (security measure)
+                user.invalidate_all_tokens()
+                await db.flush()
+                return False, None, "Token reuse detected - all sessions invalidated"
+        
+        # Also check token family for additional security
+        if token_data.token_family:
+            if user.refresh_token_family and user.refresh_token_family != token_data.token_family:
+                logger.error(
+                    "Refresh token family mismatch - invalidating all tokens",
+                    user_id=str(user.id),
+                    token_family=token_data.token_family[:8] + "..." if token_data.token_family else None,
+                    current_family=user.refresh_token_family[:8] + "..." if user.refresh_token_family else None,
+                )
                 user.invalidate_all_tokens()
                 await db.flush()
                 return False, None, "Token reuse detected - all sessions invalidated"
@@ -248,7 +272,8 @@ class AuthService:
         """
         Issue new access and refresh tokens with rotation.
         
-        Updates the user's refresh_token_family to track the current valid family.
+        Updates the user's refresh_token_family and current_refresh_jti to track
+        the only valid refresh token.
         
         Returns:
             Tuple of (access_token, refresh_token, family_id)
@@ -264,20 +289,22 @@ class AuthService:
         )
         
         # Create new refresh token (same family if rotating, new family if fresh login)
-        refresh_token, family_id = cls.create_refresh_token(
+        refresh_token, family_id, jti = cls.create_refresh_token(
             user.id,
             token_version,
             old_family,  # Keep same family for rotation
         )
         
-        # Update user's current family
+        # Update user's current family and JTI (only this token is now valid)
         user.refresh_token_family = family_id
+        user.current_refresh_jti = jti
         await db.flush()
         
         logger.info(
             "Token rotation completed",
             user_id=str(user.id),
             family_id=family_id[:8] + "...",
+            jti=jti[:8] + "...",
         )
         
         return access_token, refresh_token, family_id

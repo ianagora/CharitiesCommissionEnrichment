@@ -35,6 +35,8 @@ class User(Base):
     token_version = Column(Integer, default=0, nullable=True)
     # Track the current refresh token family (for refresh token rotation)
     refresh_token_family = Column(String(64), nullable=True, index=True)
+    # Track the current valid refresh token JTI (unique ID) - only this token is valid
+    current_refresh_jti = Column(String(64), nullable=True)
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -52,3 +54,4 @@ class User(Base):
         """Increment token version to invalidate all existing tokens."""
         self.token_version = (self.token_version or 0) + 1
         self.refresh_token_family = None
+        self.current_refresh_jti = None

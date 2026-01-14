@@ -92,6 +92,17 @@ async def init_db():
                     ON users (refresh_token_family)
                 """))
                 print("[MIGRATION] Added refresh_token_family column to users table")
+            
+            # Check if current_refresh_jti column exists (for strict token rotation)
+            result = await conn.execute(text("""
+                SELECT column_name FROM information_schema.columns 
+                WHERE table_name = 'users' AND column_name = 'current_refresh_jti'
+            """))
+            if not result.fetchone():
+                await conn.execute(text("""
+                    ALTER TABLE users ADD COLUMN current_refresh_jti VARCHAR(64)
+                """))
+                print("[MIGRATION] Added current_refresh_jti column to users table")
         except Exception as e:
             print(f"[MIGRATION] Migration check/update: {e}")
 
