@@ -245,6 +245,7 @@ class AuthService:
                 # Invalidate all tokens for this user (security measure)
                 user.invalidate_all_tokens()
                 await db.flush()
+                await db.commit()  # CRITICAL: Commit to persist the invalidation
                 return False, None, "Token reuse detected - all sessions invalidated"
         
         # Also check token family for additional security
@@ -258,6 +259,7 @@ class AuthService:
                 )
                 user.invalidate_all_tokens()
                 await db.flush()
+                await db.commit()  # CRITICAL: Commit to persist the invalidation
                 return False, None, "Token reuse detected - all sessions invalidated"
         
         return True, user, None
