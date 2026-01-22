@@ -1,7 +1,7 @@
 # FastAPI and ASGI server
 fastapi==0.109.2
 uvicorn[standard]==0.27.1
-gunicorn==21.2.0
+gunicorn==22.0.0  # SECURITY: Updated from 21.2.0 (CVE-2024-1135, CVE-2024-6827)
 
 # Database
 sqlalchemy==2.0.25
@@ -10,19 +10,19 @@ psycopg2-binary==2.9.9
 alembic==1.13.1
 
 # Authentication
-python-jose[cryptography]==3.3.0
+python-jose[cryptography]==3.4.0  # SECURITY: Updated from 3.3.0 (PYSEC-2024-232, PYSEC-2024-233)
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1  # Pin to 4.0.x for passlib compatibility (4.1+ removed __about__ module)
 
 # Data processing
 pandas==2.2.0
 openpyxl==3.1.2
-python-multipart==0.0.9
+python-multipart==0.0.18  # SECURITY: Updated from 0.0.9 (CVE-2024-53981)
 aiofiles==23.2.1
 
 # HTTP client
 httpx==0.26.0
-aiohttp==3.9.3
+aiohttp==3.9.4  # SECURITY: Updated from 3.9.3 (12 CVEs including memory corruption)
 
 # OpenAI
 openai==1.12.0
