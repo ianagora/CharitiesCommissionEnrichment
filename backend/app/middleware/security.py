@@ -9,17 +9,20 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """
     Enhanced security middleware with CREST compliance improvements.
     
+    SECURITY UPDATE: Always uses strict CSP (no 'unsafe-inline')
+    - Removes XSS vulnerability in all environments
+    - CREST pen test ready
+    - Best practice: security-by-default
+    
     Changes from original:
-    - Removed 'unsafe-inline' from CSP in production
-    - Increased HSTS to 2 years (CREST requirement)
+    - ALWAYS strict CSP (no unsafe-inline) - CREST requirement
+    - Increased HSTS to 2 years - CREST requirement
     - Added Cross-Origin-* policies
     - Added X-Permitted-Cross-Domain-Policies
     """
     
     async def dispatch(self, request: Request, call_next) -> Response:
         response = await call_next(request)
-        
-        environment = os.getenv("ENVIRONMENT", "development")
         
         # Prevent clickjacking - page cannot be embedded in iframes
         response.headers["X-Frame-Options"] = "DENY"
@@ -38,33 +41,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # preload allows browser preload lists
         response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
         
-        # Content Security Policy - PRODUCTION removes unsafe-inline
-        if environment == "production":
-            # STRICT CSP for production - no unsafe-inline
-            csp_directives = [
-                "default-src 'self'",
-                "script-src 'self' https://cdn.tailwindcss.com https://cdn.jsdelivr.net",
-                "style-src 'self' https://cdn.jsdelivr.net",
-                "font-src 'self' https://cdn.jsdelivr.net",
-                "img-src 'self' data: https:",
-                "connect-src 'self' https://charitiescommissionenrichment-production.up.railway.app",
-                "frame-ancestors 'none'",
-                "form-action 'self'",
-                "base-uri 'self'",
-            ]
-        else:
-            # Development - keep unsafe-inline for easier development
-            csp_directives = [
-                "default-src 'self'",
-                "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net",
-                "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
-                "font-src 'self' https://cdn.jsdelivr.net",
-                "img-src 'self' data: https:",
-                "connect-src 'self' https://charitiescommissionenrichment-production.up.railway.app",
-                "frame-ancestors 'none'",
-                "form-action 'self'",
-                "base-uri 'self'",
-            ]
+        # Content Security Policy - ALWAYS STRICT (no unsafe-inline)
+        # This removes the XSS vulnerability and ensures CREST compliance
+        csp_directives = [
+            "default-src 'self'",
+            "script-src 'self' https://cdn.tailwindcss.com https://cdn.jsdelivr.net",
+            "style-src 'self' https://cdn.jsdelivr.net",
+            "font-src 'self' https://cdn.jsdelivr.net",
+            "img-src 'self' data: https:",
+            "connect-src 'self' https://charitiescommissionenrichment-production.up.railway.app",
+            "frame-ancestors 'none'",
+            "form-action 'self'",
+            "base-uri 'self'",
+        ]
         
         response.headers["Content-Security-Policy"] = "; ".join(csp_directives)
         
@@ -78,12 +67,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         ]
         response.headers["Permissions-Policy"] = ", ".join(permissions)
         
-        # NEW: Cross-Origin policies for additional security
+        # Cross-Origin policies for additional security
         response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
         response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
         response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
         
-        # NEW: Prevent Adobe Flash/PDF cross-domain policies
+        # Prevent Adobe Flash/PDF cross-domain policies
         response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
         
         # Prevent caching of sensitive data
