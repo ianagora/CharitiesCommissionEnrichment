@@ -1730,3 +1730,20 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 console.log('✅ Admin Panel & Mandatory 2FA Loaded');
+
+// Expose functions globally for onclick handlers
+window.showLogin = showLogin;
+window.showRegister = showRegister;
+window.toggleAuthMode = toggleAuthMode;
+window.closeAuthModal = closeAuthModal;
+window.togglePasswordVisibility = togglePasswordVisibility;
+window.handleAuth = handleAuth;
+window.showDashboard = showDashboard;
+window.loadBatches = loadBatches;
+window.processBatch = processBatch;
+window.exportBatch = exportBatch;
+window.closeEntityModal = closeEntityModal;
+window.showAdminPanel = showAdminPanel;
+window.showSettings = showSettings;
+
+console.log('✅ Global functions exposed');
