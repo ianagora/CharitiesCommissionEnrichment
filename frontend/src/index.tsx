@@ -12,14 +12,14 @@ const app = new Hono<{ Bindings: Bindings }>()
 app.use('*', async (c, next) => {
   await next()
   
-  // Content Security Policy - strict, no unsafe-inline
+  // Content Security Policy - allows inline scripts for critical functions
   const csp = [
     "default-src 'self'",
-    "script-src 'self' https://cdn.tailwindcss.com https://cdn.jsdelivr.net",
-    "style-src 'self' https://cdn.jsdelivr.net",
+    "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net",
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
     "font-src 'self' https://cdn.jsdelivr.net",
     "img-src 'self' data: https:",
-    "connect-src 'self'",  // API calls go through proxy
+    "connect-src 'self' https://charitiescommissionenrichment-production.up.railway.app",
     "frame-ancestors 'none'",
     "form-action 'self'",
     "base-uri 'self'"
