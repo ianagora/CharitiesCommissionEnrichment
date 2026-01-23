@@ -75,8 +75,8 @@ app.get('/', (c) => {
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <!-- Critical: Define global functions immediately to prevent onclick errors -->
     <script>
-        // API Configuration
-        const API_BASE = 'https://charitiescommissionenrichment-production.up.railway.app/api/v1';
+        // API Configuration - Use Cloudflare Worker proxy (not direct backend)
+        const API_BASE = '/api/v1';
         let accessToken = localStorage.getItem('accessToken');
         let refreshToken = localStorage.getItem('refreshToken');
         let isLoginMode = true;
