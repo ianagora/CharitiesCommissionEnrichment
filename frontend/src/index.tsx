@@ -75,9 +75,13 @@ app.get('/', (c) => {
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <!-- Critical: Define global functions immediately to prevent onclick errors -->
     <script>
-        // Define showLogin IMMEDIATELY inline (not waiting for external script)
+        // API Configuration
+        const API_BASE = 'https://charitiescommissionenrichment-production.up.railway.app/api/v1';
+        let accessToken = localStorage.getItem('accessToken');
+        let refreshToken = localStorage.getItem('refreshToken');
         let isLoginMode = true;
         
+        // Define showLogin IMMEDIATELY inline (not waiting for external script)
         window.showLogin = function() {
             console.log('✅ showLogin called (inline version)');
             isLoginMode = true;
@@ -146,8 +150,67 @@ app.get('/', (c) => {
             }
         };
         
+        // Handle authentication (login/register)
+        window.handleAuth = async function(event) {
+            event.preventDefault();
+            console.log('✅ handleAuth called');
+            
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            
+            try {
+                if (isLoginMode) {
+                    // Login
+                    console.log('Logging in...');
+                    const response = await axios.post(API_BASE + '/auth/login', { email, password });
+                    accessToken = response.data.access_token;
+                    refreshToken = response.data.refresh_token;
+                    localStorage.setItem('accessToken', accessToken);
+                    localStorage.setItem('refreshToken', refreshToken);
+                    console.log('✅ Login successful');
+                } else {
+                    // Register
+                    console.log('Registering...');
+                    const full_name = document.getElementById('full_name').value;
+                    const organization = document.getElementById('organization')?.value;
+                    await axios.post(API_BASE + '/auth/register', { 
+                        email, 
+                        password, 
+                        full_name,
+                        organization 
+                    });
+                    // Auto-login after registration
+                    const response = await axios.post(API_BASE + '/auth/login', { email, password });
+                    accessToken = response.data.access_token;
+                    refreshToken = response.data.refresh_token;
+                    localStorage.setItem('accessToken', accessToken);
+                    localStorage.setItem('refreshToken', refreshToken);
+                    console.log('✅ Registration successful, logged in');
+                }
+                
+                window.closeAuthModal();
+                
+                // Reload page to initialize app.js with authentication
+                console.log('Reloading page...');
+                window.location.reload();
+                
+            } catch (error) {
+                console.error('Auth error:', error);
+                let errorMsg = 'Authentication failed';
+                if (error.response?.data?.detail) {
+                    errorMsg = error.response.data.detail;
+                } else if (error.response?.status === 401) {
+                    errorMsg = 'Invalid email or password';
+                } else if (!error.response) {
+                    errorMsg = 'Cannot connect to server. Please check your connection.';
+                }
+                alert(errorMsg);
+            }
+        };
+        
         console.log('✅ Critical inline functions defined');
         console.log('window.showLogin:', typeof window.showLogin);
+        console.log('window.handleAuth:', typeof window.handleAuth);
     </script>
     <style>
         .gradient-bg {
