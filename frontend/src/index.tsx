@@ -153,15 +153,53 @@ app.get('/', (c) => {
         // Handle authentication (login/register)
         window.handleAuth = async function(event) {
             event.preventDefault();
-            console.log('✅ handleAuth called');
+            console.log('✅ handleAuth called, mode:', isLoginMode ? 'Login' : 'Register');
             
             const email = document.getElementById('email').value;
             const password = document.getElementById('password').value;
             
+            // Validate for registration
+            if (!isLoginMode) {
+                const full_name = document.getElementById('full_name').value;
+                const confirmPassword = document.getElementById('confirm_password').value;
+                
+                if (!full_name) {
+                    alert('Please enter your full name');
+                    return;
+                }
+                
+                if (password !== confirmPassword) {
+                    alert('❌ Passwords do not match!');
+                    return;
+                }
+                
+                // Password strength validation
+                if (password.length < 8) {
+                    alert('❌ Password must be at least 8 characters long');
+                    return;
+                }
+                if (!/[A-Z]/.test(password)) {
+                    alert('❌ Password must contain at least one uppercase letter');
+                    return;
+                }
+                if (!/[a-z]/.test(password)) {
+                    alert('❌ Password must contain at least one lowercase letter');
+                    return;
+                }
+                if (!/[0-9]/.test(password)) {
+                    alert('❌ Password must contain at least one number');
+                    return;
+                }
+                if (!/[!@#$%^&*()_+\-=\[\]{}|;:"',.<>?/]/.test(password)) {
+                    alert('❌ Password must contain at least one special character');
+                    return;
+                }
+            }
+            
             try {
                 if (isLoginMode) {
                     // Login
-                    console.log('Logging in...');
+                    console.log('Logging in with:', email);
                     const response = await axios.post(API_BASE + '/auth/login', { email, password });
                     accessToken = response.data.access_token;
                     refreshToken = response.data.refresh_token;
@@ -170,40 +208,57 @@ app.get('/', (c) => {
                     console.log('✅ Login successful');
                 } else {
                     // Register
-                    console.log('Registering...');
+                    console.log('Registering user:', email);
                     const full_name = document.getElementById('full_name').value;
                     const organization = document.getElementById('organization')?.value;
+                    
                     await axios.post(API_BASE + '/auth/register', { 
                         email, 
                         password, 
                         full_name,
                         organization 
                     });
+                    console.log('✅ Registration successful, now logging in...');
+                    
                     // Auto-login after registration
                     const response = await axios.post(API_BASE + '/auth/login', { email, password });
                     accessToken = response.data.access_token;
                     refreshToken = response.data.refresh_token;
                     localStorage.setItem('accessToken', accessToken);
                     localStorage.setItem('refreshToken', refreshToken);
-                    console.log('✅ Registration successful, logged in');
+                    console.log('✅ Auto-login successful');
                 }
                 
                 window.closeAuthModal();
                 
                 // Reload page to initialize app.js with authentication
-                console.log('Reloading page...');
+                console.log('Reloading page to load dashboard...');
                 window.location.reload();
                 
             } catch (error) {
                 console.error('Auth error:', error);
+                console.error('Error details:', error.response?.data);
+                
                 let errorMsg = 'Authentication failed';
+                
                 if (error.response?.data?.detail) {
                     errorMsg = error.response.data.detail;
                 } else if (error.response?.status === 401) {
                     errorMsg = 'Invalid email or password';
+                } else if (error.response?.status === 422) {
+                    errorMsg = 'Invalid input. Please check your information.';
+                    if (error.response?.data?.detail) {
+                        errorMsg += '\n' + JSON.stringify(error.response.data.detail);
+                    }
+                } else if (error.response?.status === 400) {
+                    errorMsg = error.response?.data?.detail || 'Bad request';
+                    if (errorMsg.includes('already registered')) {
+                        errorMsg = '❌ This email is already registered. Please login instead.';
+                    }
                 } else if (!error.response) {
-                    errorMsg = 'Cannot connect to server. Please check your connection.';
+                    errorMsg = '❌ Cannot connect to server. Please check your connection.';
                 }
+                
                 alert(errorMsg);
             }
         };
