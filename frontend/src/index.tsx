@@ -75,25 +75,79 @@ app.get('/', (c) => {
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <!-- Critical: Define global functions immediately to prevent onclick errors -->
     <script>
-        // Stub functions until app.js loads
-        window.showLogin = window.showRegister = window.toggleAuthMode = 
-        window.closeAuthModal = window.togglePasswordVisibility = window.handleAuth = 
-        window.showDashboard = window.loadBatches = window.processBatch = 
-        window.exportBatch = window.closeEntityModal = window.showAdminPanel = 
-        window.showSettings = function() {
-            console.log('Waiting for app.js to load...');
-            // Retry after a short delay
-            setTimeout(() => {
-                if (window.appJsLoaded) {
-                    // Call the actual function
-                    const funcName = arguments.callee.name || 'function';
-                    if (window[funcName] && typeof window[funcName] === 'function') {
-                        window[funcName].apply(this, arguments);
-                    }
-                }
-            }, 100);
+        // Define showLogin IMMEDIATELY inline (not waiting for external script)
+        let isLoginMode = true;
+        
+        window.showLogin = function() {
+            console.log('✅ showLogin called (inline version)');
+            isLoginMode = true;
+            const modal = document.getElementById('auth-modal');
+            if (modal) {
+                modal.classList.remove('hidden');
+                document.getElementById('auth-title').textContent = 'Login';
+                document.getElementById('auth-btn-text').textContent = 'Login';
+                document.getElementById('auth-switch-text').textContent = "Don't have an account?";
+                document.getElementById('auth-switch-btn').textContent = 'Register';
+                document.getElementById('name-field').classList.add('hidden');
+                document.getElementById('organization-field').classList.add('hidden');
+                document.getElementById('confirm-password-field').classList.add('hidden');
+                document.getElementById('password-strength').classList.add('hidden');
+            } else {
+                console.error('auth-modal not found');
+            }
         };
-        console.log('✅ Stub functions defined');
+        
+        window.showRegister = function() {
+            console.log('✅ showRegister called (inline version)');
+            isLoginMode = false;
+            const modal = document.getElementById('auth-modal');
+            if (modal) {
+                modal.classList.remove('hidden');
+                document.getElementById('auth-title').textContent = 'Register';
+                document.getElementById('auth-btn-text').textContent = 'Register';
+                document.getElementById('auth-switch-text').textContent = 'Already have an account?';
+                document.getElementById('auth-switch-btn').textContent = 'Login';
+                document.getElementById('name-field').classList.remove('hidden');
+                document.getElementById('organization-field').classList.remove('hidden');
+                document.getElementById('confirm-password-field').classList.remove('hidden');
+                document.getElementById('password-strength').classList.remove('hidden');
+            }
+        };
+        
+        window.toggleAuthMode = function() {
+            if (isLoginMode) {
+                window.showRegister();
+            } else {
+                window.showLogin();
+            }
+        };
+        
+        window.closeAuthModal = function() {
+            const modal = document.getElementById('auth-modal');
+            if (modal) {
+                modal.classList.add('hidden');
+                document.getElementById('auth-form').reset();
+            }
+        };
+        
+        window.togglePasswordVisibility = function(fieldId) {
+            const field = document.getElementById(fieldId);
+            const icon = document.getElementById(fieldId + '-icon');
+            if (field && icon) {
+                if (field.type === 'password') {
+                    field.type = 'text';
+                    icon.classList.remove('fa-eye');
+                    icon.classList.add('fa-eye-slash');
+                } else {
+                    field.type = 'password';
+                    icon.classList.remove('fa-eye-slash');
+                    icon.classList.add('fa-eye');
+                }
+            }
+        };
+        
+        console.log('✅ Critical inline functions defined');
+        console.log('window.showLogin:', typeof window.showLogin);
     </script>
     <style>
         .gradient-bg {
