@@ -925,3 +925,648 @@ function getProgressPercent(batch) {
     if (!batch.total_records) return 0;
     return Math.round((batch.matched_records / batch.total_records) * 100);
 }
+
+// ============================================
+// ADMIN PANEL & 2FA FUNCTIONALITY
+// ============================================
+
+let currentUser = null;
+
+// Check if user needs 2FA setup (MANDATORY)
+async function check2FARequired() {
+    try {
+        const response = await api.get('/auth/2fa/status');
+        const userResponse = await api.get('/auth/me');
+        currentUser = userResponse.data;
+        
+        // If 2FA is not enabled and not in setup, force setup
+        if (!response.data.enabled && !window.location.hash.includes('2fa-setup')) {
+            show2FAMandatorySetup();
+            return true;
+        }
+        return false;
+    } catch (error) {
+        console.error('2FA status check failed:', error);
+        return false;
+    }
+}
+
+// Show mandatory 2FA setup modal
+function show2FAMandatorySetup() {
+    const modal = document.createElement('div');
+    modal.id = '2fa-mandatory-modal';
+    modal.className = 'fixed inset-0 bg-black/70 flex items-center justify-center z-50';
+    modal.innerHTML = `
+        <div class="bg-white rounded-xl p-8 max-w-md w-full mx-4 card-shadow">
+            <div class="text-center mb-6">
+                <div class="mx-auto w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4">
+                    <i class="fas fa-shield-alt text-red-600 text-2xl"></i>
+                </div>
+                <h2 class="text-2xl font-bold text-gray-800">Two-Factor Authentication Required</h2>
+                <p class="text-gray-600 mt-2">For security, all users must enable 2FA to continue.</p>
+            </div>
+            <button onclick="initiate2FASetup()" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-medium transition">
+                <i class="fas fa-lock mr-2"></i>Set Up 2FA Now
+            </button>
+            <p class="text-center text-sm text-gray-500 mt-4">You cannot access the application without 2FA.</p>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+// Initiate 2FA setup
+async function initiate2FASetup() {
+    try {
+        const response = await api.post('/auth/2fa/setup');
+        const { qr_code, backup_codes } = response.data;
+        
+        show2FASetupWizard(qr_code, backup_codes);
+    } catch (error) {
+        alert(error.response?.data?.detail || 'Failed to initiate 2FA setup');
+    }
+}
+
+// Show 2FA setup wizard
+function show2FASetupWizard(qrCode, backupCodes) {
+    const existingModal = document.getElementById('2fa-mandatory-modal');
+    if (existingModal) existingModal.remove();
+    
+    const modal = document.createElement('div');
+    modal.id = '2fa-setup-wizard';
+    modal.className = 'fixed inset-0 bg-black/70 flex items-center justify-center z-50 overflow-y-auto';
+    modal.innerHTML = `
+        <div class="bg-white rounded-xl p-8 max-w-2xl w-full mx-4 my-8 card-shadow">
+            <h2 class="text-2xl font-bold text-gray-800 mb-6">
+                <i class="fas fa-mobile-alt mr-2 text-blue-600"></i>Set Up Two-Factor Authentication
+            </h2>
+            
+            <!-- Step 1: Scan QR Code -->
+            <div class="mb-6">
+                <h3 class="font-bold text-lg mb-3">Step 1: Scan QR Code</h3>
+                <p class="text-gray-600 mb-4">Use Google Authenticator, Authy, or any TOTP app:</p>
+                <div class="bg-gray-50 p-4 rounded-lg text-center">
+                    <img src="${qrCode}" alt="QR Code" class="mx-auto" style="max-width: 250px;">
+                </div>
+            </div>
+            
+            <!-- Step 2: Save Backup Codes -->
+            <div class="mb-6">
+                <h3 class="font-bold text-lg mb-3">Step 2: Save Backup Codes</h3>
+                <p class="text-gray-600 mb-3">Store these codes securely. Each can only be used once:</p>
+                <div class="bg-yellow-50 border-2 border-yellow-300 rounded-lg p-4">
+                    <div class="grid grid-cols-2 gap-2 font-mono text-sm">
+                        ${backupCodes.map(code => `<div class="bg-white p-2 rounded">${code}</div>`).join('')}
+                    </div>
+                    <button onclick="copyBackupCodes('${backupCodes.join(', ')}')" 
+                            class="mt-3 text-sm text-blue-600 hover:underline">
+                        <i class="fas fa-copy mr-1"></i>Copy All Codes
+                    </button>
+                </div>
+                <p class="text-sm text-red-600 mt-2">
+                    <i class="fas fa-exclamation-triangle mr-1"></i>
+                    Warning: You won't be able to see these codes again!
+                </p>
+            </div>
+            
+            <!-- Step 3: Verify -->
+            <div class="mb-6">
+                <h3 class="font-bold text-lg mb-3">Step 3: Verify Code</h3>
+                <p class="text-gray-600 mb-3">Enter the 6-digit code from your authenticator app:</p>
+                <input type="text" 
+                       id="2fa-verify-code" 
+                       placeholder="123456" 
+                       maxlength="6"
+                       class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg text-center text-2xl font-mono tracking-widest focus:ring-2 focus:ring-blue-500">
+            </div>
+            
+            <button onclick="verify2FASetup()" 
+                    class="w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-medium transition">
+                <i class="fas fa-check-circle mr-2"></i>Enable 2FA
+            </button>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+// Copy backup codes
+function copyBackupCodes(codes) {
+    navigator.clipboard.writeText(codes).then(() => {
+        alert('Backup codes copied to clipboard!');
+    });
+}
+
+// Verify and enable 2FA
+async function verify2FASetup() {
+    const code = document.getElementById('2fa-verify-code').value;
+    
+    if (!code || code.length !== 6) {
+        alert('Please enter a 6-digit code');
+        return;
+    }
+    
+    try {
+        await api.post('/auth/2fa/verify', { token: code });
+        
+        const modal = document.getElementById('2fa-setup-wizard');
+        if (modal) modal.remove();
+        
+        alert('✅ 2FA enabled successfully! You can now access the application.');
+        location.reload();
+    } catch (error) {
+        alert(error.response?.data?.detail || 'Invalid verification code. Please try again.');
+    }
+}
+
+// Show Admin Panel
+function showAdminPanel() {
+    if (!currentUser?.is_superuser) {
+        alert('Access denied. Admin privileges required.');
+        return;
+    }
+    
+    document.getElementById('dashboard').classList.add('hidden');
+    document.getElementById('batch-detail').classList.add('hidden');
+    document.getElementById('landing').classList.add('hidden');
+    
+    let adminPanel = document.getElementById('admin-panel');
+    if (!adminPanel) {
+        adminPanel = document.createElement('div');
+        adminPanel.id = 'admin-panel';
+        document.querySelector('main .container').appendChild(adminPanel);
+    }
+    
+    adminPanel.classList.remove('hidden');
+    adminPanel.innerHTML = `
+        <div class="mb-6 flex items-center justify-between">
+            <div>
+                <button onclick="showDashboard()" class="text-blue-600 hover:text-blue-700 mb-2">
+                    <i class="fas fa-arrow-left mr-2"></i>Back to Dashboard
+                </button>
+                <h2 class="text-3xl font-bold text-gray-800">
+                    <i class="fas fa-cog mr-2 text-blue-600"></i>Admin Panel
+                </h2>
+            </div>
+        </div>
+        
+        <!-- Tab Navigation -->
+        <div class="mb-6 border-b border-gray-200">
+            <nav class="flex space-x-8">
+                <button onclick="showAdminTab('users')" id="admin-tab-users" 
+                        class="admin-tab py-4 px-2 border-b-2 border-blue-600 font-medium text-blue-600">
+                    <i class="fas fa-users mr-2"></i>User Management
+                </button>
+                <button onclick="showAdminTab('settings')" id="admin-tab-settings" 
+                        class="admin-tab py-4 px-2 border-b-2 border-transparent font-medium text-gray-500 hover:text-gray-700">
+                    <i class="fas fa-shield-alt mr-2"></i>Security Settings
+                </button>
+                <button onclick="showAdminTab('my2fa')" id="admin-tab-my2fa" 
+                        class="admin-tab py-4 px-2 border-b-2 border-transparent font-medium text-gray-500 hover:text-gray-700">
+                    <i class="fas fa-mobile-alt mr-2"></i>My 2FA
+                </button>
+            </nav>
+        </div>
+        
+        <!-- Tab Content -->
+        <div id="admin-tab-content"></div>
+    `;
+    
+    showAdminTab('users');
+}
+
+// Show admin tab
+function showAdminTab(tab) {
+    // Update tab styling
+    document.querySelectorAll('.admin-tab').forEach(btn => {
+        btn.classList.remove('border-blue-600', 'text-blue-600');
+        btn.classList.add('border-transparent', 'text-gray-500');
+    });
+    document.getElementById(`admin-tab-${tab}`).classList.add('border-blue-600', 'text-blue-600');
+    document.getElementById(`admin-tab-${tab}`).classList.remove('border-transparent', 'text-gray-500');
+    
+    const content = document.getElementById('admin-tab-content');
+    
+    if (tab === 'users') {
+        showUserManagement(content);
+    } else if (tab === 'settings') {
+        showSecuritySettings(content);
+    } else if (tab === 'my2fa') {
+        showMy2FASettings(content);
+    }
+}
+
+// User Management Tab
+function showUserManagement(container) {
+    container.innerHTML = `
+        <div class="bg-white rounded-xl p-6 card-shadow mb-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-xl font-bold text-gray-800">
+                    <i class="fas fa-user-plus mr-2 text-green-600"></i>Add New User
+                </h3>
+            </div>
+            <form onsubmit="createUser(event)" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Email *</label>
+                    <input type="email" id="new-user-email" required 
+                           class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Full Name</label>
+                    <input type="text" id="new-user-name" 
+                           class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Password *</label>
+                    <input type="password" id="new-user-password" required minlength="8"
+                           class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
+                    <p class="text-xs text-gray-500 mt-1">Min 8 chars, 1 uppercase, 1 lowercase, 1 digit, 1 special char</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Organization</label>
+                    <input type="text" id="new-user-org" 
+                           class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div class="md:col-span-2">
+                    <label class="flex items-center">
+                        <input type="checkbox" id="new-user-admin" class="mr-2">
+                        <span class="text-sm font-medium text-gray-700">Make this user an administrator</span>
+                    </label>
+                </div>
+                <div class="md:col-span-2">
+                    <button type="submit" class="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-medium transition">
+                        <i class="fas fa-user-plus mr-2"></i>Create User
+                    </button>
+                </div>
+            </form>
+        </div>
+        
+        <div class="bg-white rounded-xl p-6 card-shadow">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-xl font-bold text-gray-800">
+                    <i class="fas fa-users mr-2 text-blue-600"></i>All Users
+                </h3>
+                <button onclick="loadAllUsers()" class="text-blue-600 hover:text-blue-700">
+                    <i class="fas fa-sync-alt mr-1"></i>Refresh
+                </button>
+            </div>
+            <div id="users-list">
+                <div class="text-center py-8">
+                    <div class="loader mx-auto mb-2"></div>
+                    <p class="text-gray-500">Loading users...</p>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    loadAllUsers();
+}
+
+// Create new user
+async function createUser(event) {
+    event.preventDefault();
+    
+    const email = document.getElementById('new-user-email').value;
+    const password = document.getElementById('new-user-password').value;
+    const fullName = document.getElementById('new-user-name').value;
+    const organization = document.getElementById('new-user-org').value;
+    const isAdmin = document.getElementById('new-user-admin').checked;
+    
+    try {
+        await api.post('/auth/register', {
+            email,
+            password,
+            full_name: fullName || null,
+            organization: organization || null
+        });
+        
+        // If admin, promote them
+        if (isAdmin) {
+            // Note: We'd need a backend endpoint for this
+            // For now, show message
+            alert('✅ User created! Use CLI to make them admin: python scripts/manage_users.py make-superuser --email ' + email);
+        } else {
+            alert('✅ User created successfully!');
+        }
+        
+        // Clear form
+        event.target.reset();
+        
+        // Reload users list
+        loadAllUsers();
+    } catch (error) {
+        alert(error.response?.data?.detail || 'Failed to create user');
+    }
+}
+
+// Load all users (Note: This requires a backend endpoint)
+async function loadAllUsers() {
+    const container = document.getElementById('users-list');
+    
+    // Note: We need to create a /users endpoint in the backend
+    // For now, show a message
+    container.innerHTML = `
+        <div class="text-center py-8">
+            <p class="text-gray-600 mb-4">User listing requires backend endpoint: <code class="bg-gray-100 px-2 py-1 rounded">GET /api/v1/users</code></p>
+            <p class="text-sm text-gray-500">Use CLI for now: <code class="bg-gray-100 px-2 py-1 rounded">python scripts/manage_users.py list-users</code></p>
+        </div>
+    `;
+    
+    // TODO: Uncomment when backend endpoint is ready
+    /*
+    try {
+        const response = await api.get('/users');
+        const users = response.data;
+        
+        container.innerHTML = `
+            <table class="w-full">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-4 py-3 text-left text-sm font-medium text-gray-600">Email</th>
+                        <th class="px-4 py-3 text-left text-sm font-medium text-gray-600">Name</th>
+                        <th class="px-4 py-3 text-left text-sm font-medium text-gray-600">Status</th>
+                        <th class="px-4 py-3 text-left text-sm font-medium text-gray-600">Role</th>
+                        <th class="px-4 py-3 text-left text-sm font-medium text-gray-600">2FA</th>
+                        <th class="px-4 py-3 text-left text-sm font-medium text-gray-600">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${users.map(user => `
+                        <tr class="border-t hover:bg-gray-50">
+                            <td class="px-4 py-3 text-sm">${escapeHtml(user.email)}</td>
+                            <td class="px-4 py-3 text-sm">${escapeHtml(user.full_name || '-')}</td>
+                            <td class="px-4 py-3 text-sm">
+                                <span class="px-2 py-1 rounded text-xs ${user.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">
+                                    ${user.is_active ? 'Active' : 'Disabled'}
+                                </span>
+                            </td>
+                            <td class="px-4 py-3 text-sm">
+                                <span class="px-2 py-1 rounded text-xs ${user.is_superuser ? 'bg-purple-100 text-purple-800' : 'bg-gray-100 text-gray-800'}">
+                                    ${user.is_superuser ? 'Admin' : 'User'}
+                                </span>
+                            </td>
+                            <td class="px-4 py-3 text-sm">
+                                ${user.two_factor_enabled ? '<i class="fas fa-check-circle text-green-600"></i>' : '<i class="fas fa-times-circle text-red-600"></i>'}
+                            </td>
+                            <td class="px-4 py-3 text-sm">
+                                <button onclick="toggleUserStatus('${user.id}', ${user.is_active})" 
+                                        class="text-blue-600 hover:underline mr-2">
+                                    ${user.is_active ? 'Disable' : 'Enable'}
+                                </button>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+    } catch (error) {
+        container.innerHTML = '<p class="text-center text-red-600 py-4">Failed to load users</p>';
+    }
+    */
+}
+
+// Security Settings Tab
+function showSecuritySettings(container) {
+    container.innerHTML = `
+        <div class="bg-white rounded-xl p-6 card-shadow mb-6">
+            <h3 class="text-xl font-bold text-gray-800 mb-4">
+                <i class="fas fa-shield-alt mr-2 text-blue-600"></i>Two-Factor Authentication Policy
+            </h3>
+            <div class="bg-blue-50 border-l-4 border-blue-500 p-4 mb-4">
+                <div class="flex items-start">
+                    <i class="fas fa-info-circle text-blue-600 mt-1 mr-3"></i>
+                    <div>
+                        <p class="font-medium text-blue-900">2FA is MANDATORY for all users</p>
+                        <p class="text-sm text-blue-800 mt-1">All users must enable two-factor authentication before accessing the application.</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="border rounded-lg p-4">
+                    <h4 class="font-bold text-gray-800 mb-2">
+                        <i class="fas fa-lock mr-2 text-green-600"></i>Current Status
+                    </h4>
+                    <p class="text-sm text-gray-600 mb-3">2FA enforcement: <span class="font-bold text-green-600">ENABLED</span></p>
+                    <p class="text-sm text-gray-600">New users must enable 2FA on first login</p>
+                </div>
+                
+                <div class="border rounded-lg p-4">
+                    <h4 class="font-bold text-gray-800 mb-2">
+                        <i class="fas fa-users mr-2 text-blue-600"></i>User Compliance
+                    </h4>
+                    <p class="text-sm text-gray-600 mb-3">Check compliance in user list</p>
+                    <button onclick="showAdminTab('users')" class="text-sm text-blue-600 hover:underline">
+                        View Users →
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="bg-white rounded-xl p-6 card-shadow">
+            <h3 class="text-xl font-bold text-gray-800 mb-4">
+                <i class="fas fa-tachometer-alt mr-2 text-orange-600"></i>Rate Limiting
+            </h3>
+            <div class="space-y-3">
+                <div class="flex justify-between items-center py-2 border-b">
+                    <span class="text-gray-700">Login Attempts</span>
+                    <span class="font-bold">5 per minute</span>
+                </div>
+                <div class="flex justify-between items-center py-2 border-b">
+                    <span class="text-gray-700">API Requests</span>
+                    <span class="font-bold">60 per minute</span>
+                </div>
+                <div class="flex justify-between items-center py-2 border-b">
+                    <span class="text-gray-700">File Uploads</span>
+                    <span class="font-bold">10 per minute</span>
+                </div>
+                <div class="flex justify-between items-center py-2">
+                    <span class="text-gray-700">Account Lockout</span>
+                    <span class="font-bold">15 minutes</span>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+// My 2FA Settings Tab
+function showMy2FASettings(container) {
+    container.innerHTML = `
+        <div class="bg-white rounded-xl p-6 card-shadow">
+            <h3 class="text-xl font-bold text-gray-800 mb-4">
+                <i class="fas fa-mobile-alt mr-2 text-green-600"></i>My Two-Factor Authentication
+            </h3>
+            <div id="my-2fa-status">
+                <div class="text-center py-4">
+                    <div class="loader mx-auto"></div>
+                    <p class="text-gray-500 mt-2">Loading 2FA status...</p>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    load2FAStatus();
+}
+
+// Load current user's 2FA status
+async function load2FAStatus() {
+    const container = document.getElementById('my-2fa-status');
+    
+    try {
+        const response = await api.get('/auth/2fa/status');
+        const { enabled } = response.data;
+        
+        container.innerHTML = `
+            <div class="space-y-4">
+                <div class="flex items-center justify-between p-4 border rounded-lg ${enabled ? 'bg-green-50 border-green-300' : 'bg-yellow-50 border-yellow-300'}">
+                    <div class="flex items-center">
+                        <i class="fas ${enabled ? 'fa-check-circle text-green-600' : 'fa-exclamation-circle text-yellow-600'} text-2xl mr-3"></i>
+                        <div>
+                            <p class="font-bold text-gray-800">2FA Status: ${enabled ? 'Enabled' : 'Not Enabled'}</p>
+                            <p class="text-sm text-gray-600">${enabled ? 'Your account is protected with 2FA' : 'You must enable 2FA'}</p>
+                        </div>
+                    </div>
+                </div>
+                
+                ${enabled ? `
+                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                        <p class="text-sm text-gray-700 mb-3">
+                            <i class="fas fa-info-circle text-blue-600 mr-2"></i>
+                            To reset your 2FA, you'll need to disable it first (requires password + current 2FA code).
+                        </p>
+                        <button onclick="disable2FA()" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
+                            <i class="fas fa-times-circle mr-2"></i>Disable 2FA
+                        </button>
+                    </div>
+                ` : `
+                    <div class="bg-red-50 border border-red-200 rounded-lg p-4">
+                        <p class="text-sm text-red-700 font-medium mb-3">
+                            <i class="fas fa-exclamation-triangle mr-2"></i>
+                            2FA is mandatory. Please set it up now.
+                        </p>
+                        <button onclick="initiate2FASetup()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
+                            <i class="fas fa-lock mr-2"></i>Set Up 2FA
+                        </button>
+                    </div>
+                `}
+            </div>
+        `;
+    } catch (error) {
+        container.innerHTML = '<p class="text-center text-red-600 py-4">Failed to load 2FA status</p>';
+    }
+}
+
+// Disable 2FA (requires verification)
+async function disable2FA() {
+    const password = prompt('Enter your password to disable 2FA:');
+    if (!password) return;
+    
+    const token = prompt('Enter current 2FA code or backup code:');
+    if (!token) return;
+    
+    try {
+        await api.post('/auth/2fa/disable', { password, token });
+        alert('✅ 2FA disabled successfully. You must enable it again immediately.');
+        load2FAStatus();
+        
+        // Force re-setup
+        setTimeout(() => initiate2FASetup(), 1000);
+    } catch (error) {
+        alert(error.response?.data?.detail || 'Failed to disable 2FA');
+    }
+}
+
+// Update auth section to show admin link
+const originalUpdateAuthSection = window.updateAuthSection;
+window.updateAuthSection = function(user) {
+    if (originalUpdateAuthSection) originalUpdateAuthSection(user);
+    
+    currentUser = user;
+    const authSection = document.getElementById('auth-section');
+    
+    if (user.is_superuser) {
+        const adminBtn = document.createElement('button');
+        adminBtn.onclick = showAdminPanel;
+        adminBtn.className = 'bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg transition mr-2';
+        adminBtn.innerHTML = '<i class="fas fa-cog mr-2"></i>Admin';
+        authSection.insertBefore(adminBtn, authSection.firstChild);
+    }
+};
+
+// Override login to check 2FA on success
+const originalHandleAuth = window.handleAuth;
+window.handleAuth = async function(event) {
+    event.preventDefault();
+    
+    const email = document.getElementById('email').value;
+    const password = document.getElementById('password').value;
+    const fullName = document.getElementById('full_name')?.value;
+    
+    try {
+        let response;
+        if (isLoginMode) {
+            // Login
+            response = await axios.post(`${API_BASE}/auth/login`, { email, password });
+            accessToken = response.data.access_token;
+            refreshToken = response.data.refresh_token;
+            localStorage.setItem('accessToken', accessToken);
+            localStorage.setItem('refreshToken', refreshToken);
+            
+            closeAuthModal();
+            
+            // Check if 2FA is required
+            const needs2FA = await check2FARequired();
+            if (!needs2FA) {
+                await checkAuth();
+            }
+        } else {
+            // Register
+            response = await axios.post(`${API_BASE}/auth/register`, {
+                email,
+                password,
+                full_name: fullName
+            });
+            
+            alert('✅ Registration successful! Please login.');
+            showLogin();
+        }
+    } catch (error) {
+        if (error.response?.status === 403 && error.response?.headers?.['x-require-2fa']) {
+            // 2FA required
+            const code = prompt('Enter your 6-digit 2FA code:');
+            if (code) {
+                try {
+                    const response = await axios.post(`${API_BASE}/auth/login`, {
+                        email,
+                        password,
+                        totp_code: code
+                    });
+                    accessToken = response.data.access_token;
+                    refreshToken = response.data.refresh_token;
+                    localStorage.setItem('accessToken', accessToken);
+                    localStorage.setItem('refreshToken', refreshToken);
+                    
+                    closeAuthModal();
+                    await checkAuth();
+                } catch (error2) {
+                    alert(error2.response?.data?.detail || 'Invalid 2FA code');
+                }
+            }
+        } else {
+            alert(error.response?.data?.detail || 'Authentication failed');
+        }
+    }
+};
+
+// Check 2FA on page load
+document.addEventListener('DOMContentLoaded', () => {
+    if (accessToken) {
+        check2FARequired().then(needs2FA => {
+            if (!needs2FA) {
+                checkAuth();
+            }
+        });
+    } else {
+        showLanding();
+    }
+});
+
+console.log('✅ Admin Panel & Mandatory 2FA Loaded');
