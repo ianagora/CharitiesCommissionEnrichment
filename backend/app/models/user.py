@@ -38,6 +38,11 @@ class User(Base):
     # Track the current valid refresh token JTI (unique ID) - only this token is valid
     current_refresh_jti = Column(String(64), nullable=True)
     
+    # Two-Factor Authentication
+    two_factor_enabled = Column(Boolean, default=False, nullable=False)
+    two_factor_secret = Column(String(32), nullable=True)  # TOTP secret key
+    backup_codes = Column(Text, nullable=True)  # JSON array of backup codes
+    
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

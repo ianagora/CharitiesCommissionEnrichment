@@ -56,6 +56,7 @@ class UserLogin(BaseModel):
     """Schema for user login."""
     email: EmailStr
     password: str
+    totp_code: Optional[str] = None  # 6-digit TOTP code or backup code
 
 
 class Token(BaseModel):

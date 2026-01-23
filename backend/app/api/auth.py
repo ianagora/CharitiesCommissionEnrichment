@@ -129,6 +129,65 @@ async def login(
             detail="User account is inactive",
         )
     
+    # Check if 2FA is enabled
+    if user.two_factor_enabled:
+        if not login_data.totp_code:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="2FA code required",
+                headers={"X-Require-2FA": "true"},
+            )
+        
+        # Import here to avoid circular dependency
+        from app.services.two_factor import TwoFactorService
+        
+        # Try TOTP first
+        totp_valid = TwoFactorService.verify_totp(
+            user.two_factor_secret,
+            login_data.totp_code
+        )
+        
+        # If TOTP fails, try backup code
+        if not totp_valid and user.backup_codes:
+            code_valid, updated_codes = TwoFactorService.verify_backup_code(
+                user.backup_codes,
+                login_data.totp_code
+            )
+            
+            if code_valid:
+                # Update backup codes (remove used code)
+                user.backup_codes = updated_codes
+                await db.commit()
+                logger.info(
+                    "Backup code used for login",
+                    user_id=str(user.id),
+                    email=user.email
+                )
+            else:
+                # Both TOTP and backup code failed
+                logger.warning(
+                    "Invalid 2FA code during login",
+                    user_id=str(user.id),
+                    email=user.email,
+                    ip=client_ip
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid 2FA code",
+                )
+        elif not totp_valid:
+            # TOTP failed and no backup codes available
+            logger.warning(
+                "Invalid 2FA code during login",
+                user_id=str(user.id),
+                email=user.email,
+                ip=client_ip
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid 2FA code",
+            )
+    
     # Successful login - clear any failed attempts
     await login_rate_limiter.record_successful_login(login_data.email, client_ip)
     

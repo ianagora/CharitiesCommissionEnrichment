@@ -8,6 +8,22 @@ type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings }>()
 
+// Security Headers Middleware
+app.use('*', async (c, next) => {
+  await next()
+  
+  // Set security headers
+  c.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self' https://charitiescommissionenrichment-production.up.railway.app; frame-ancestors 'none'; form-action 'self'; base-uri 'self'")
+  c.header('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload')
+  c.header('X-Frame-Options', 'DENY')
+  c.header('X-Content-Type-Options', 'nosniff')
+  c.header('Referrer-Policy', 'strict-origin-when-cross-origin')
+  c.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), payment=(), usb=()')
+  // Removed COEP to allow CDN resources
+  c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+  c.header('Cross-Origin-Resource-Policy', 'cross-origin')
+})
+
 // Enable CORS
 app.use('*', cors())
 
