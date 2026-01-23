@@ -1,42 +1,77 @@
 // Charity Commission Data Enrichment Platform - Frontend JavaScript
 
-// API Configuration - Direct backend URL (CORS enabled)
-const API_BASE = 'https://charitiescommissionenrichment-production.up.railway.app/api/v1';
-let accessToken = localStorage.getItem('accessToken');
-let refreshToken = localStorage.getItem('refreshToken');
+// API Configuration - Use proxy endpoint (no hardcoded URLs)
+// The Cloudflare Worker proxies /api/* requests to the backend
+const API_BASE = '/api/v1';
+
+// Token management - access token in memory (more secure than localStorage)
+// Refresh token is handled via httpOnly cookie by the browser (not accessible by JS)
+let accessToken = localStorage.getItem('accessToken'); // Backwards compatible, will migrate to memory-only
 let currentBatchId = null;
 let currentPage = 1;
 let isLoginMode = true;
 
-// Axios instance with auth interceptor
+// CSRF token helper - read from cookie set by backend
+function getCSRFToken() {
+    const match = document.cookie.match(/csrf_token=([^;]+)/);
+    return match ? match[1] : null;
+}
+
+// Axios instance with auth and CSRF interceptors
 const api = axios.create({
     baseURL: API_BASE,
+    withCredentials: true,  // Send cookies (including httpOnly refresh token)
 });
 
+// Request interceptor - add auth and CSRF headers
 api.interceptors.request.use((config) => {
+    // Add auth header if we have access token
     if (accessToken) {
         config.headers.Authorization = `Bearer ${accessToken}`;
     }
+    
+    // Add CSRF token for state-changing requests
+    const csrfToken = getCSRFToken();
+    if (csrfToken && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(config.method?.toUpperCase())) {
+        config.headers['X-CSRF-Token'] = csrfToken;
+    }
+    
     return config;
 });
 
+// Response interceptor - handle token refresh
 api.interceptors.response.use(
     (response) => response,
     async (error) => {
-        if (error.response?.status === 401 && refreshToken) {
+        const originalRequest = error.config;
+        
+        // If 401 and we haven't already tried to refresh
+        if (error.response?.status === 401 && !originalRequest._retry) {
+            originalRequest._retry = true;
+            
             try {
-                const response = await axios.post(`${API_BASE}/auth/refresh`, null, {
-                    params: { refresh_token: refreshToken }
-                });
-                accessToken = response.data.access_token;
-                refreshToken = response.data.refresh_token;
-                localStorage.setItem('accessToken', accessToken);
-                localStorage.setItem('refreshToken', refreshToken);
+                // Refresh uses httpOnly cookie - browser sends it automatically
+                const response = await axios.post(
+                    `${API_BASE}/auth/refresh`,
+                    null,
+                    { 
+                        withCredentials: true,
+                        headers: { 'X-CSRF-Token': getCSRFToken() }
+                    }
+                );
                 
-                error.config.headers.Authorization = `Bearer ${accessToken}`;
-                return axios(error.config);
+                // Update access token in memory (not localStorage for better security)
+                accessToken = response.data.access_token;
+                // Keep localStorage for backwards compatibility during transition
+                localStorage.setItem('accessToken', accessToken);
+                
+                // Retry original request with new token
+                originalRequest.headers.Authorization = `Bearer ${accessToken}`;
+                return axios(originalRequest);
             } catch (refreshError) {
+                // Refresh failed - clear tokens and redirect to login
                 logout();
+                return Promise.reject(refreshError);
             }
         }
         return Promise.reject(error);
@@ -213,20 +248,29 @@ async function handleAuth(event) {
     
     try {
         if (isLoginMode) {
-            const response = await axios.post(`${API_BASE}/auth/login`, { email, password });
+            // Login - refresh token comes back in httpOnly cookie
+            const response = await axios.post(
+                `${API_BASE}/auth/login`, 
+                { email, password },
+                { withCredentials: true }  // Important: receive cookies
+            );
             accessToken = response.data.access_token;
-            refreshToken = response.data.refresh_token;
-            localStorage.setItem('accessToken', accessToken);
-            localStorage.setItem('refreshToken', refreshToken);
+            localStorage.setItem('accessToken', accessToken);  // Backwards compatible
         } else {
             const full_name = document.getElementById('full_name').value;
-            await axios.post(`${API_BASE}/auth/register`, { email, password, full_name });
+            await axios.post(
+                `${API_BASE}/auth/register`, 
+                { email, password, full_name },
+                { withCredentials: true }
+            );
             // Auto-login after registration
-            const response = await axios.post(`${API_BASE}/auth/login`, { email, password });
+            const response = await axios.post(
+                `${API_BASE}/auth/login`, 
+                { email, password },
+                { withCredentials: true }
+            );
             accessToken = response.data.access_token;
-            refreshToken = response.data.refresh_token;
             localStorage.setItem('accessToken', accessToken);
-            localStorage.setItem('refreshToken', refreshToken);
         }
         
         closeAuthModal();
@@ -236,11 +280,19 @@ async function handleAuth(event) {
     }
 }
 
-function logout() {
+async function logout() {
+    try {
+        // Call logout endpoint to clear httpOnly cookie server-side
+        await api.post('/auth/logout');
+    } catch (error) {
+        // Continue with client-side cleanup even if server call fails
+        console.warn('Logout API call failed:', error);
+    }
+    
+    // Clear client-side tokens
     accessToken = null;
-    refreshToken = null;
     localStorage.removeItem('accessToken');
-    localStorage.removeItem('refreshToken');
+    localStorage.removeItem('refreshToken');  // Clean up legacy storage
     showLanding();
 }
 

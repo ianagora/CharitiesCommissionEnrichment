@@ -2,7 +2,7 @@
 import logging
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, status
@@ -17,6 +17,11 @@ from app.config import settings
 from app.database import init_db, close_db
 from app.api import api_router
 from app.middleware.security import SecurityHeadersMiddleware
+from app.middleware.csrf import CSRFMiddleware
+
+# Constants
+REQUEST_ID_HEADER = "X-Request-ID"
+ERROR_ID_LENGTH = 8
 
 # Configure Python logging to use stdout/stderr
 logging.basicConfig(
@@ -104,6 +109,9 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# Add CSRF protection middleware (must be before other middleware)
+app.add_middleware(CSRFMiddleware)
+
 # Add security headers middleware (must be added before CORS)
 app.add_middleware(SecurityHeadersMiddleware)
 
@@ -114,27 +122,45 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=settings.cors_methods_list,  # Explicit methods, not "*"
     allow_headers=settings.cors_headers_list,  # Explicit headers, not "*"
-    expose_headers=["X-Request-ID"],  # Headers client can access
+    expose_headers=["X-Request-ID", "X-CSRF-Token"],  # Headers client can access
     max_age=600,  # Cache preflight requests for 10 minutes
 )
 
 
-# Request logging middleware
+# Request ID and logging middleware
 @app.middleware("http")
-async def log_requests(request: Request, call_next):
-    """Log all incoming requests."""
-    start_time = datetime.utcnow()
+async def add_request_id_and_log(request: Request, call_next):
+    """
+    Add request ID for correlation and log all incoming requests.
+    
+    The request ID is:
+    - Used from incoming X-Request-ID header if present
+    - Generated if not present
+    - Added to response headers for client correlation
+    - Included in all log messages for this request
+    """
+    # Get or generate request ID
+    request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid4())[:ERROR_ID_LENGTH]
+    
+    # Store in request state for access in handlers
+    request.state.request_id = request_id
+    
+    start_time = datetime.now(timezone.utc)
     
     # Process request
     response = await call_next(request)
     
+    # Add request ID to response headers
+    response.headers[REQUEST_ID_HEADER] = request_id
+    
     # Calculate duration
-    duration = (datetime.utcnow() - start_time).total_seconds()
+    duration = (datetime.now(timezone.utc) - start_time).total_seconds()
     
     # Log request (skip health checks)
     if not request.url.path.startswith("/api/v1/health"):
         logger.info(
             "Request processed",
+            request_id=request_id,
             method=request.method,
             path=request.url.path,
             status_code=response.status_code,
@@ -151,33 +177,29 @@ async def global_exception_handler(request: Request, exc: Exception):
     """Handle unexpected exceptions securely."""
     import traceback
     
-    # Generate a unique error ID for correlation (don't expose timestamp)
-    error_id = str(uuid4())[:8]
+    # Use request ID if available, otherwise generate error ID
+    error_id = getattr(request.state, 'request_id', None) or str(uuid4())[:ERROR_ID_LENGTH]
     
     # Log full details server-side only
     logger.error(
         "Unhandled exception",
-        error_id=error_id,
+        request_id=error_id,
         path=request.url.path,
         method=request.method,
         error_type=type(exc).__name__,
         error_message=str(exc),
         client_ip=request.client.host if request.client else None,
+        traceback=traceback.format_exc() if settings.DEBUG else None,
     )
-    
-    # Print to stderr for Railway logs (full details for debugging)
-    print(f"[ERROR {error_id}] {request.method} {request.url.path}", file=sys.stderr, flush=True)
-    print(f"[ERROR {error_id}] {type(exc).__name__}: {str(exc)}", file=sys.stderr, flush=True)
-    if settings.DEBUG:
-        print(f"[ERROR {error_id}] Traceback:\n{traceback.format_exc()}", file=sys.stderr, flush=True)
     
     # Return generic error to client (don't leak internal details)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
             "detail": "An internal error occurred. Please try again later.",
-            "error_id": error_id,  # Allow user to report this ID
+            "request_id": error_id,  # Allow user to report this ID for support
         },
+        headers={REQUEST_ID_HEADER: error_id},
     )
 
 

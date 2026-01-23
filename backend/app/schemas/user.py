@@ -6,6 +6,32 @@ from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
+# Password complexity requirements
+PASSWORD_SPECIAL_CHARS = "!@#$%^&*()_+-=[]{}|;:',.<>?/`~"
+
+
+def validate_password_complexity(password: str) -> str:
+    """
+    Validate password meets complexity requirements.
+    
+    Requirements:
+    - At least 8 characters
+    - At least one uppercase letter
+    - At least one lowercase letter
+    - At least one digit
+    - At least one special character
+    """
+    if not any(c.isupper() for c in password):
+        raise ValueError("Password must contain at least one uppercase letter")
+    if not any(c.islower() for c in password):
+        raise ValueError("Password must contain at least one lowercase letter")
+    if not any(c.isdigit() for c in password):
+        raise ValueError("Password must contain at least one digit")
+    if not any(c in PASSWORD_SPECIAL_CHARS for c in password):
+        raise ValueError(f"Password must contain at least one special character ({PASSWORD_SPECIAL_CHARS})")
+    return password
+
+
 class UserCreate(BaseModel):
     """Schema for creating a new user."""
     email: EmailStr
@@ -17,17 +43,7 @@ class UserCreate(BaseModel):
     @classmethod
     def validate_password(cls, v: str) -> str:
         """Validate password complexity."""
-        if not any(c.isupper() for c in v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not any(c.islower() for c in v):
-            raise ValueError("Password must contain at least one lowercase letter")
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Password must contain at least one digit")
-        # Require special character
-        special_chars = "!@#$%^&*()_+-=[]{}|;:',.<>?/`~"
-        if not any(c in special_chars for c in v):
-            raise ValueError("Password must contain at least one special character (!@#$%^&*()_+-=[]{}|;:',.<>?/`~)")
-        return v
+        return validate_password_complexity(v)
 
 
 class UserUpdate(BaseModel):
@@ -37,19 +53,38 @@ class UserUpdate(BaseModel):
 
 
 class UserResponse(BaseModel):
-    """Schema for user response."""
+    """Schema for user response - excludes sensitive data."""
     id: UUID
     email: EmailStr
     full_name: Optional[str]
     organization: Optional[str]
     is_active: bool
+    is_superuser: bool = False
     is_verified: bool
-    api_key: Optional[str]
+    has_api_key: bool = False  # Only indicate if API key exists, don't expose it
+    two_factor_enabled: bool = False
     created_at: datetime
     last_login_at: Optional[datetime]
     
     class Config:
         from_attributes = True
+    
+    @classmethod
+    def from_user(cls, user) -> "UserResponse":
+        """Create response from User model with computed fields."""
+        return cls(
+            id=user.id,
+            email=user.email,
+            full_name=user.full_name,
+            organization=user.organization,
+            is_active=user.is_active,
+            is_superuser=user.is_superuser,
+            is_verified=user.is_verified,
+            has_api_key=user.api_key_hash is not None,
+            two_factor_enabled=user.two_factor_enabled,
+            created_at=user.created_at,
+            last_login_at=user.last_login_at,
+        )
 
 
 class UserLogin(BaseModel):
@@ -60,7 +95,14 @@ class UserLogin(BaseModel):
 
 
 class Token(BaseModel):
-    """Schema for JWT tokens."""
+    """Schema for JWT tokens (access token only - refresh token in httpOnly cookie)."""
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class TokenWithRefresh(BaseModel):
+    """Schema for JWT tokens including refresh token (for backwards compatibility)."""
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
@@ -86,14 +128,4 @@ class PasswordChange(BaseModel):
     @classmethod
     def validate_password(cls, v: str) -> str:
         """Validate password complexity."""
-        if not any(c.isupper() for c in v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not any(c.islower() for c in v):
-            raise ValueError("Password must contain at least one lowercase letter")
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Password must contain at least one digit")
-        # Require special character
-        special_chars = "!@#$%^&*()_+-=[]{}|;:',.<>?/`~"
-        if not any(c in special_chars for c in v):
-            raise ValueError("Password must contain at least one special character (!@#$%^&*()_+-=[]{}|;:',.<>?/`~)")
-        return v
+        return validate_password_complexity(v)

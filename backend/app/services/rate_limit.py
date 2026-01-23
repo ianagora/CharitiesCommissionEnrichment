@@ -1,6 +1,6 @@
 """Rate limiting and account lockout service with Redis support."""
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Tuple
 from collections import defaultdict
 import structlog
@@ -11,9 +11,13 @@ logger = structlog.get_logger()
 
 # Try to import Redis
 try:
-    import redis.asyncio as redis
+    import redis.asyncio as redis_async
+    from typing import TYPE_CHECKING
+    if TYPE_CHECKING:
+        from redis.asyncio import Redis as RedisType
     REDIS_AVAILABLE = True
 except ImportError:
+    redis_async = None  # type: ignore
     REDIS_AVAILABLE = False
     logger.warning("Redis not installed - using in-memory rate limiting")
 
@@ -33,12 +37,12 @@ class RedisRateLimiter:
     
     def __init__(self, redis_url: str):
         self.redis_url = redis_url
-        self._client: Optional[redis.Redis] = None
+        self._client = None  # type: ignore
     
-    async def get_client(self) -> redis.Redis:
+    async def get_client(self):
         """Get or create Redis client."""
-        if self._client is None:
-            self._client = redis.from_url(
+        if self._client is None and redis_async is not None:
+            self._client = redis_async.from_url(
                 self.redis_url,
                 encoding="utf-8",
                 decode_responses=True,
@@ -82,7 +86,7 @@ class RedisRateLimiter:
             lockout_key = self._get_lockout_key(email)
             
             # Current timestamp
-            now = datetime.utcnow().timestamp()
+            now = datetime.now(timezone.utc).timestamp()
             window_start = now - (self.ATTEMPT_WINDOW * 60)
             
             # Add this attempt to sorted set (score = timestamp)
@@ -151,7 +155,7 @@ class RedisRateLimiter:
             attempts_key = self._get_attempts_key(email)
             
             # Remove old attempts first
-            now = datetime.utcnow().timestamp()
+            now = datetime.now(timezone.utc).timestamp()
             window_start = now - (self.ATTEMPT_WINDOW * 60)
             await client.zremrangebyscore(attempts_key, 0, window_start)
             
@@ -188,7 +192,7 @@ class InMemoryRateLimiter:
     
     def _clean_old_attempts(self, identifier: str) -> None:
         """Remove attempts older than the window."""
-        cutoff = datetime.utcnow() - timedelta(minutes=self.ATTEMPT_WINDOW)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=self.ATTEMPT_WINDOW)
         self._failed_attempts[identifier] = [
             (ts, ip) for ts, ip in self._failed_attempts[identifier]
             if ts > cutoff
@@ -201,8 +205,8 @@ class InMemoryRateLimiter:
         async with self._lock:
             if identifier in self._lockouts:
                 unlock_time = self._lockouts[identifier]
-                if datetime.utcnow() < unlock_time:
-                    remaining = int((unlock_time - datetime.utcnow()).total_seconds())
+                if datetime.now(timezone.utc) < unlock_time:
+                    remaining = int((unlock_time - datetime.now(timezone.utc)).total_seconds())
                     return True, remaining
                 else:
                     # Lockout expired, remove it
@@ -219,7 +223,7 @@ class InMemoryRateLimiter:
             self._clean_old_attempts(identifier)
             
             # Record this attempt
-            self._failed_attempts[identifier].append((datetime.utcnow(), ip))
+            self._failed_attempts[identifier].append((datetime.now(timezone.utc), ip))
             attempt_count = len(self._failed_attempts[identifier])
             
             logger.warning(
@@ -232,7 +236,7 @@ class InMemoryRateLimiter:
             
             # Check if we should lock
             if attempt_count >= self.MAX_ATTEMPTS:
-                unlock_time = datetime.utcnow() + timedelta(minutes=self.LOCKOUT_DURATION)
+                unlock_time = datetime.now(timezone.utc) + timedelta(minutes=self.LOCKOUT_DURATION)
                 self._lockouts[identifier] = unlock_time
                 
                 logger.error(

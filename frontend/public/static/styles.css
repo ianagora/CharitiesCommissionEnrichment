@@ -1,0 +1,39 @@
+/**
+ * Charity Commission Data Enrichment Platform - Styles
+ */
+
+.gradient-bg {
+    background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%);
+}
+
+.card-shadow {
+    box-shadow: 0 10px 40px -10px rgba(0,0,0,0.1);
+}
+
+.status-matched { color: #10b981; }
+.status-pending { color: #f59e0b; }
+.status-no-match { color: #ef4444; }
+.status-review { color: #8b5cf6; }
+
+.animate-fade-in {
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.loader {
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #3498db;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
