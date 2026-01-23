@@ -1716,22 +1716,7 @@ Try again in a few moments.';
     }
 };
 
-// Check 2FA on page load
-document.addEventListener('DOMContentLoaded', () => {
-    if (accessToken) {
-        check2FARequired().then(needs2FA => {
-            if (!needs2FA) {
-                checkAuth();
-            }
-        });
-    } else {
-        showLanding();
-    }
-});
-
-console.log('✅ Admin Panel & Mandatory 2FA Loaded');
-
-// Expose functions globally for onclick handlers
+// Expose functions globally for onclick handlers (MUST be before DOMContentLoaded)
 window.showLogin = showLogin;
 window.showRegister = showRegister;
 window.toggleAuthMode = toggleAuthMode;
@@ -1746,4 +1731,18 @@ window.closeEntityModal = closeEntityModal;
 window.showAdminPanel = showAdminPanel;
 window.showSettings = showSettings;
 
-console.log('✅ Global functions exposed');
+console.log('✅ Admin Panel & Mandatory 2FA Loaded');
+console.log('✅ Global functions exposed:', Object.keys(window).filter(k => k.startsWith('show') || k.startsWith('toggle') || k.startsWith('close') || k.startsWith('load') || k.startsWith('process') || k.startsWith('export')));
+
+// Check 2FA on page load
+document.addEventListener('DOMContentLoaded', () => {
+    if (accessToken) {
+        check2FARequired().then(needs2FA => {
+            if (!needs2FA) {
+                checkAuth();
+            }
+        });
+    } else {
+        showLanding();
+    }
+});
