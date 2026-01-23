@@ -50,3 +50,4 @@ pyotp==2.9.0
 qrcode[pil]==7.4.2
 pillow==10.2.0
 python-multipart==0.0.18
+
