@@ -1730,9 +1730,10 @@ window.exportBatch = exportBatch;
 window.closeEntityModal = closeEntityModal;
 window.showAdminPanel = showAdminPanel;
 window.showSettings = showSettings;
+window.appJsLoaded = true;
 
 console.log('✅ Admin Panel & Mandatory 2FA Loaded');
-console.log('✅ Global functions exposed:', Object.keys(window).filter(k => k.startsWith('show') || k.startsWith('toggle') || k.startsWith('close') || k.startsWith('load') || k.startsWith('process') || k.startsWith('export')));
+console.log('✅ app.js fully loaded - real functions now active');
 
 // Check 2FA on page load
 document.addEventListener('DOMContentLoaded', () => {

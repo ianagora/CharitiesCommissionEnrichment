@@ -70,6 +70,28 @@ app.get('/', (c) => {
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <!-- Critical: Define global functions immediately to prevent onclick errors -->
+    <script>
+        // Stub functions until app.js loads
+        window.showLogin = window.showRegister = window.toggleAuthMode = 
+        window.closeAuthModal = window.togglePasswordVisibility = window.handleAuth = 
+        window.showDashboard = window.loadBatches = window.processBatch = 
+        window.exportBatch = window.closeEntityModal = window.showAdminPanel = 
+        window.showSettings = function() {
+            console.log('Waiting for app.js to load...');
+            // Retry after a short delay
+            setTimeout(() => {
+                if (window.appJsLoaded) {
+                    // Call the actual function
+                    const funcName = arguments.callee.name || 'function';
+                    if (window[funcName] && typeof window[funcName] === 'function') {
+                        window[funcName].apply(this, arguments);
+                    }
+                }
+            }, 100);
+        };
+        console.log('✅ Stub functions defined');
+    </script>
     <style>
         .gradient-bg {
             background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%);
@@ -112,7 +134,7 @@ app.get('/', (c) => {
                     <h1 class="text-xl font-bold">Charity Commission Data Enrichment</h1>
                 </div>
                 <div id="auth-section" class="flex items-center space-x-4">
-                    <button onclick="showLogin()" id="login-btn" class="bg-white/20 hover:bg-white/30 px-4 py-2 rounded-lg transition">
+                    <button id="nav-login-btn" class="bg-white/20 hover:bg-white/30 px-4 py-2 rounded-lg transition">
                         <i class="fas fa-sign-in-alt mr-2"></i>Login
                     </button>
                 </div>
@@ -422,7 +444,7 @@ app.get('/', (c) => {
                         <p class="text-gray-600">Build recursive corporate ownership structures</p>
                     </div>
                 </div>
-                <button onclick="showLogin()" class="bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-xl font-bold text-lg transition">
+                <button id="get-started-btn" class="bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-xl font-bold text-lg transition">
                     <i class="fas fa-rocket mr-2"></i>Get Started
                 </button>
             </div>
@@ -430,6 +452,41 @@ app.get('/', (c) => {
     </main>
 
     <script src="/static/app.js"></script>
+    <script>
+        // Attach event listeners after DOM loads
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('✅ Attaching button listeners');
+            
+            // Login buttons
+            const navLoginBtn = document.getElementById('nav-login-btn');
+            const getStartedBtn = document.getElementById('get-started-btn');
+            
+            if (navLoginBtn) {
+                navLoginBtn.addEventListener('click', () => {
+                    console.log('Nav login clicked');
+                    if (typeof window.showLogin === 'function') {
+                        window.showLogin();
+                    } else {
+                        console.error('showLogin not defined');
+                    }
+                });
+            }
+            
+            if (getStartedBtn) {
+                getStartedBtn.addEventListener('click', () => {
+                    console.log('Get started clicked');
+                    if (typeof window.showLogin === 'function') {
+                        window.showLogin();
+                    } else {
+                        console.error('showLogin not defined');
+                    }
+                });
+            }
+            
+            console.log('✅ Button listeners attached');
+            console.log('window.showLogin type:', typeof window.showLogin);
+        });
+    </script>
 </body>
 </html>
   `)
