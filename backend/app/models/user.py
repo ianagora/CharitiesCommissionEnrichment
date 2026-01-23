@@ -1,6 +1,6 @@
 """User model for authentication."""
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
@@ -8,6 +8,12 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.database import Base
+
+
+# Constants for security
+API_KEY_PREFIX_LENGTH = 8  # Characters to store for identification
+TOKEN_FAMILY_LENGTH = 32
+TOKEN_JTI_LENGTH = 16
 
 
 class User(Base):
@@ -26,9 +32,10 @@ class User(Base):
     is_superuser = Column(Boolean, default=False, nullable=False)
     is_verified = Column(Boolean, default=False, nullable=False)
     
-    # API access
-    api_key = Column(String(64), unique=True, index=True, nullable=True)
-    api_key_created_at = Column(DateTime, nullable=True)
+    # API access - store hash, not plain text
+    api_key_hash = Column(String(255), nullable=True)  # bcrypt hash of the full key
+    api_key_prefix = Column(String(12), index=True, nullable=True)  # First 8 chars for identification
+    api_key_created_at = Column(DateTime(timezone=True), nullable=True)
     
     # Token security - version increments on password change/logout to invalidate tokens
     # Note: nullable=True for backwards compatibility with existing rows
@@ -43,10 +50,10 @@ class User(Base):
     two_factor_secret = Column(String(32), nullable=True)  # TOTP secret key
     backup_codes = Column(Text, nullable=True)  # JSON array of backup codes
     
-    # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    last_login_at = Column(DateTime, nullable=True)
+    # Timestamps - use timezone-aware datetimes
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
     
     # Relationships
     batches = relationship("EntityBatch", back_populates="user", lazy="dynamic")

@@ -1,8 +1,11 @@
 """Authentication API routes with refresh token rotation."""
-from datetime import datetime
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 import structlog
 
 from app.database import get_db
@@ -10,7 +13,7 @@ from app.models.user import User
 from app.models.audit import AuditLog, AuditAction
 from app.schemas.user import (
     UserCreate, UserResponse, UserLogin, UserUpdate,
-    Token, PasswordChange
+    Token, TokenWithRefresh, PasswordChange
 )
 from app.services.auth import AuthService
 from app.services.rate_limit import login_rate_limiter
@@ -20,20 +23,29 @@ from app.config import settings
 logger = structlog.get_logger()
 router = APIRouter()
 
+# Rate limiter for registration
+limiter = Limiter(key_func=get_remote_address)
+
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("3/minute")  # Prevent spam account creation
 async def register(
     user_data: UserCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Register a new user."""
-    # Check if user exists
+    # Check if user exists - use generic message to prevent enumeration
     existing = await AuthService.get_user_by_email(db, user_data.email)
     if existing:
+        # Log the attempt but return generic message
+        logger.warning(
+            "Registration attempt with existing email",
+            ip=request.client.host if request.client else None
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered",
+            detail="Registration failed. Please check your information or contact support.",
         )
     
     # Create user
@@ -57,13 +69,42 @@ async def register(
     )
     db.add(audit_log)
     
-    return user
+    return UserResponse.from_user(user)
 
 
-@router.post("/login", response_model=Token)
+# Constants for secure cookie settings
+REFRESH_TOKEN_COOKIE_NAME = "refresh_token"
+REFRESH_TOKEN_COOKIE_PATH = "/api/v1/auth"
+
+
+def set_refresh_token_cookie(response: Response, refresh_token: str, max_age: int) -> None:
+    """Set refresh token in a secure httpOnly cookie."""
+    from app.config import settings
+    
+    response.set_cookie(
+        key=REFRESH_TOKEN_COOKIE_NAME,
+        value=refresh_token,
+        max_age=max_age,
+        httponly=True,  # Not accessible by JavaScript - prevents XSS token theft
+        secure=not settings.DEBUG,  # HTTPS only in production
+        samesite="strict",  # Strict CSRF protection
+        path=REFRESH_TOKEN_COOKIE_PATH,  # Only sent to auth endpoints
+    )
+
+
+def clear_refresh_token_cookie(response: Response) -> None:
+    """Clear the refresh token cookie."""
+    response.delete_cookie(
+        key=REFRESH_TOKEN_COOKIE_NAME,
+        path=REFRESH_TOKEN_COOKIE_PATH,
+    )
+
+
+@router.post("/login")
 async def login(
     login_data: UserLogin,
     request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     """Authenticate user and return JWT tokens with rotation support."""
@@ -209,27 +250,45 @@ async def login(
     )
     db.add(audit_log)
     
+    # Set refresh token in httpOnly cookie (secure, not accessible by JS)
+    cookie_max_age = settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
+    set_refresh_token_cookie(response, refresh_token, cookie_max_age)
+    
+    # Return only access token in response body
     return Token(
         access_token=access_token,
-        refresh_token=refresh_token,
         expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
 
-@router.post("/refresh", response_model=Token)
+@router.post("/refresh")
 async def refresh_token(
-    refresh_token: str,
     request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
+    refresh_token_body: str = None,  # Optional body param for backwards compatibility
 ):
     """
     Refresh access token using refresh token with rotation.
+    
+    The refresh token can be provided via:
+    1. httpOnly cookie (preferred, more secure)
+    2. Request body (for backwards compatibility)
     
     Implements refresh token rotation:
     - Each refresh issues a new refresh token
     - Old refresh tokens become invalid
     - Reuse of old tokens invalidates the entire token family
     """
+    # Get refresh token from cookie first, then fall back to body
+    refresh_token = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME) or refresh_token_body
+    
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token required",
+        )
+    
     token_data = AuthService.decode_token(refresh_token)
     
     if not token_data or not token_data.user_id:
@@ -257,9 +316,12 @@ async def refresh_token(
         db, user, token_data.token_family
     )
     
+    # Update refresh token cookie
+    cookie_max_age = settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
+    set_refresh_token_cookie(response, new_refresh_token, cookie_max_age)
+    
     return Token(
         access_token=access_token,
-        refresh_token=new_refresh_token,
         expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
@@ -267,6 +329,7 @@ async def refresh_token(
 @router.post("/logout")
 async def logout(
     request: Request,
+    response: Response,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -276,8 +339,12 @@ async def logout(
     This increments the user's token_version, which invalidates:
     - All existing access tokens
     - All existing refresh tokens
+    - Clears the refresh token cookie
     """
     await AuthService.logout_user(db, current_user)
+    
+    # Clear refresh token cookie
+    clear_refresh_token_cookie(response)
     
     # Create audit log
     audit_log = AuditLog(
@@ -299,7 +366,7 @@ async def get_current_user_profile(
     current_user: User = Depends(get_current_active_user),
 ):
     """Get current user profile."""
-    return current_user
+    return UserResponse.from_user(current_user)
 
 
 @router.patch("/me", response_model=UserResponse)
@@ -315,7 +382,7 @@ async def update_current_user_profile(
         current_user.organization = user_data.organization
     
     await db.flush()
-    return current_user
+    return UserResponse.from_user(current_user)
 
 
 @router.post("/change-password")
@@ -382,7 +449,8 @@ async def revoke_api_key(
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke the current user's API key."""
-    current_user.api_key = None
+    current_user.api_key_hash = None
+    current_user.api_key_prefix = None
     current_user.api_key_created_at = None
     await db.flush()
     

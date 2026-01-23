@@ -2,7 +2,8 @@
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
-import os
+
+from app.config import settings
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -43,13 +44,18 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         
         # Content Security Policy - ALWAYS STRICT (no unsafe-inline)
         # This removes the XSS vulnerability and ensures CREST compliance
+        # connect-src includes allowed CORS origins for API calls
+        allowed_connect = "'self'"
+        if settings.CORS_ORIGINS:
+            allowed_connect += " " + " ".join(settings.cors_origins_list)
+        
         csp_directives = [
             "default-src 'self'",
             "script-src 'self' https://cdn.tailwindcss.com https://cdn.jsdelivr.net",
             "style-src 'self' https://cdn.jsdelivr.net",
             "font-src 'self' https://cdn.jsdelivr.net",
             "img-src 'self' data: https:",
-            "connect-src 'self' https://charitiescommissionenrichment-production.up.railway.app",
+            f"connect-src {allowed_connect}",
             "frame-ancestors 'none'",
             "form-action 'self'",
             "base-uri 'self'",

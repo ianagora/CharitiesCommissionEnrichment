@@ -8,18 +8,29 @@ type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings }>()
 
-// Security Headers Middleware
+// Security Headers Middleware - CREST compliant, no unsafe-inline
 app.use('*', async (c, next) => {
   await next()
   
-  // Set security headers
-  c.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self' https://charitiescommissionenrichment-production.up.railway.app; frame-ancestors 'none'; form-action 'self'; base-uri 'self'")
+  // Content Security Policy - strict, no unsafe-inline
+  const csp = [
+    "default-src 'self'",
+    "script-src 'self' https://cdn.tailwindcss.com https://cdn.jsdelivr.net",
+    "style-src 'self' https://cdn.jsdelivr.net",
+    "font-src 'self' https://cdn.jsdelivr.net",
+    "img-src 'self' data: https:",
+    "connect-src 'self'",  // API calls go through proxy
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "base-uri 'self'"
+  ].join('; ')
+  
+  c.header('Content-Security-Policy', csp)
   c.header('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload')
   c.header('X-Frame-Options', 'DENY')
   c.header('X-Content-Type-Options', 'nosniff')
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin')
   c.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), payment=(), usb=()')
-  // Removed COEP to allow CDN resources
   c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   c.header('Cross-Origin-Resource-Policy', 'cross-origin')
 })
@@ -30,7 +41,8 @@ app.use('*', cors())
 // Serve static files
 app.use('/static/*', serveStatic())
 
-// API proxy to backend
+// API proxy to backend - removes need for hardcoded URLs
+// Forwards cookies and credentials for httpOnly cookie-based auth
 app.all('/api/*', async (c) => {
   const apiBaseUrl = c.env.API_BASE_URL || 'http://localhost:8000'
   const path = c.req.path
@@ -39,6 +51,12 @@ app.all('/api/*', async (c) => {
   const headers = new Headers(c.req.raw.headers)
   headers.delete('host')
   
+  // Forward cookies for httpOnly refresh token support
+  const cookies = c.req.header('cookie')
+  if (cookies) {
+    headers.set('cookie', cookies)
+  }
+  
   try {
     const response = await fetch(url, {
       method: c.req.method,
@@ -46,18 +64,28 @@ app.all('/api/*', async (c) => {
       body: c.req.method !== 'GET' && c.req.method !== 'HEAD' 
         ? await c.req.raw.clone().arrayBuffer() 
         : undefined,
+      credentials: 'include',  // Forward credentials/cookies
     })
+    
+    // Create new headers to forward Set-Cookie
+    const responseHeaders = new Headers(response.headers)
+    
+    // Ensure Set-Cookie headers are forwarded for auth cookies
+    const setCookie = response.headers.get('set-cookie')
+    if (setCookie) {
+      responseHeaders.set('set-cookie', setCookie)
+    }
     
     return new Response(response.body, {
       status: response.status,
-      headers: response.headers,
+      headers: responseHeaders,
     })
   } catch (error) {
     return c.json({ error: 'Backend service unavailable' }, 503)
   }
 })
 
-// Main page
+// Main page - no inline scripts for CSP compliance
 app.get('/', (c) => {
   return c.html(`
 <!DOCTYPE html>
@@ -73,231 +101,9 @@ app.get('/', (c) => {
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <!-- Critical: Define global functions immediately to prevent onclick errors -->
-    <script>
-        // API Configuration - Use Cloudflare Worker proxy (not direct backend)
-        const API_BASE = '/api/v1';
-        let accessToken = localStorage.getItem('accessToken');
-        let refreshToken = localStorage.getItem('refreshToken');
-        let isLoginMode = true;
-        
-        // Define showLogin IMMEDIATELY inline (not waiting for external script)
-        window.showLogin = function() {
-            console.log('✅ showLogin called (inline version)');
-            isLoginMode = true;
-            const modal = document.getElementById('auth-modal');
-            if (modal) {
-                modal.classList.remove('hidden');
-                document.getElementById('auth-title').textContent = 'Login';
-                document.getElementById('auth-btn-text').textContent = 'Login';
-                document.getElementById('auth-switch-text').textContent = "Don't have an account?";
-                document.getElementById('auth-switch-btn').textContent = 'Register';
-                document.getElementById('name-field').classList.add('hidden');
-                document.getElementById('organization-field').classList.add('hidden');
-                document.getElementById('confirm-password-field').classList.add('hidden');
-                document.getElementById('password-strength').classList.add('hidden');
-            } else {
-                console.error('auth-modal not found');
-            }
-        };
-        
-        window.showRegister = function() {
-            console.log('✅ showRegister called (inline version)');
-            isLoginMode = false;
-            const modal = document.getElementById('auth-modal');
-            if (modal) {
-                modal.classList.remove('hidden');
-                document.getElementById('auth-title').textContent = 'Register';
-                document.getElementById('auth-btn-text').textContent = 'Register';
-                document.getElementById('auth-switch-text').textContent = 'Already have an account?';
-                document.getElementById('auth-switch-btn').textContent = 'Login';
-                document.getElementById('name-field').classList.remove('hidden');
-                document.getElementById('organization-field').classList.remove('hidden');
-                document.getElementById('confirm-password-field').classList.remove('hidden');
-                document.getElementById('password-strength').classList.remove('hidden');
-            }
-        };
-        
-        window.toggleAuthMode = function() {
-            if (isLoginMode) {
-                window.showRegister();
-            } else {
-                window.showLogin();
-            }
-        };
-        
-        window.closeAuthModal = function() {
-            const modal = document.getElementById('auth-modal');
-            if (modal) {
-                modal.classList.add('hidden');
-                document.getElementById('auth-form').reset();
-            }
-        };
-        
-        window.togglePasswordVisibility = function(fieldId) {
-            const field = document.getElementById(fieldId);
-            const icon = document.getElementById(fieldId + '-icon');
-            if (field && icon) {
-                if (field.type === 'password') {
-                    field.type = 'text';
-                    icon.classList.remove('fa-eye');
-                    icon.classList.add('fa-eye-slash');
-                } else {
-                    field.type = 'password';
-                    icon.classList.remove('fa-eye-slash');
-                    icon.classList.add('fa-eye');
-                }
-            }
-        };
-        
-        // Handle authentication (login/register)
-        window.handleAuth = async function(event) {
-            event.preventDefault();
-            console.log('✅ handleAuth called, mode:', isLoginMode ? 'Login' : 'Register');
-            
-            const email = document.getElementById('email').value;
-            const password = document.getElementById('password').value;
-            
-            // Validate for registration
-            if (!isLoginMode) {
-                const full_name = document.getElementById('full_name').value;
-                const confirmPassword = document.getElementById('confirm_password').value;
-                
-                if (!full_name) {
-                    alert('Please enter your full name');
-                    return;
-                }
-                
-                if (password !== confirmPassword) {
-                    alert('❌ Passwords do not match!');
-                    return;
-                }
-                
-                // Password strength validation
-                if (password.length < 8) {
-                    alert('❌ Password must be at least 8 characters long');
-                    return;
-                }
-                if (!/[A-Z]/.test(password)) {
-                    alert('❌ Password must contain at least one uppercase letter');
-                    return;
-                }
-                if (!/[a-z]/.test(password)) {
-                    alert('❌ Password must contain at least one lowercase letter');
-                    return;
-                }
-                if (!/[0-9]/.test(password)) {
-                    alert('❌ Password must contain at least one number');
-                    return;
-                }
-                if (!/[!@#$%^&*()_+\-=\[\]{}|;:"',.<>?/]/.test(password)) {
-                    alert('❌ Password must contain at least one special character');
-                    return;
-                }
-            }
-            
-            try {
-                if (isLoginMode) {
-                    // Login
-                    console.log('Logging in with:', email);
-                    const response = await axios.post(API_BASE + '/auth/login', { email, password });
-                    accessToken = response.data.access_token;
-                    refreshToken = response.data.refresh_token;
-                    localStorage.setItem('accessToken', accessToken);
-                    localStorage.setItem('refreshToken', refreshToken);
-                    console.log('✅ Login successful');
-                } else {
-                    // Register
-                    console.log('Registering user:', email);
-                    const full_name = document.getElementById('full_name').value;
-                    const organization = document.getElementById('organization')?.value;
-                    
-                    await axios.post(API_BASE + '/auth/register', { 
-                        email, 
-                        password, 
-                        full_name,
-                        organization 
-                    });
-                    console.log('✅ Registration successful, now logging in...');
-                    
-                    // Auto-login after registration
-                    const response = await axios.post(API_BASE + '/auth/login', { email, password });
-                    accessToken = response.data.access_token;
-                    refreshToken = response.data.refresh_token;
-                    localStorage.setItem('accessToken', accessToken);
-                    localStorage.setItem('refreshToken', refreshToken);
-                    console.log('✅ Auto-login successful');
-                }
-                
-                window.closeAuthModal();
-                
-                // Reload page to initialize app.js with authentication
-                console.log('Reloading page to load dashboard...');
-                window.location.reload();
-                
-            } catch (error) {
-                console.error('Auth error:', error);
-                console.error('Error details:', error.response?.data);
-                
-                let errorMsg = 'Authentication failed';
-                
-                if (error.response?.data?.detail) {
-                    errorMsg = error.response.data.detail;
-                } else if (error.response?.status === 401) {
-                    errorMsg = 'Invalid email or password';
-                } else if (error.response?.status === 422) {
-                    errorMsg = 'Invalid input. Please check your information.';
-                    if (error.response?.data?.detail) {
-                        errorMsg += '\n' + JSON.stringify(error.response.data.detail);
-                    }
-                } else if (error.response?.status === 400) {
-                    errorMsg = error.response?.data?.detail || 'Bad request';
-                    if (errorMsg.includes('already registered')) {
-                        errorMsg = '❌ This email is already registered. Please login instead.';
-                    }
-                } else if (!error.response) {
-                    errorMsg = '❌ Cannot connect to server. Please check your connection.';
-                }
-                
-                alert(errorMsg);
-            }
-        };
-        
-        console.log('✅ Critical inline functions defined');
-        console.log('window.showLogin:', typeof window.showLogin);
-        console.log('window.handleAuth:', typeof window.handleAuth);
-    </script>
-    <style>
-        .gradient-bg {
-            background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%);
-        }
-        .card-shadow {
-            box-shadow: 0 10px 40px -10px rgba(0,0,0,0.1);
-        }
-        .status-matched { color: #10b981; }
-        .status-pending { color: #f59e0b; }
-        .status-no-match { color: #ef4444; }
-        .status-review { color: #8b5cf6; }
-        .animate-fade-in {
-            animation: fadeIn 0.3s ease-in-out;
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        .loader {
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid #3498db;
-            border-radius: 50%;
-            width: 24px;
-            height: 24px;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-    </style>
+    <!-- External initialization script - CSP compliant -->
+    <script src="/static/init.js"></script>
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body class="bg-gray-50 min-h-screen">
     <!-- Navigation -->
@@ -324,11 +130,11 @@ app.get('/', (c) => {
             <div class="bg-white rounded-xl p-8 max-w-md w-full mx-4 card-shadow animate-fade-in">
                 <div class="flex justify-between items-center mb-6">
                     <h2 id="auth-title" class="text-2xl font-bold text-gray-800">Login</h2>
-                    <button onclick="closeAuthModal()" class="text-gray-500 hover:text-gray-700">
+                    <button id="close-auth-modal" class="text-gray-500 hover:text-gray-700">
                         <i class="fas fa-times text-xl"></i>
                     </button>
                 </div>
-                <form id="auth-form" onsubmit="handleAuth(event)">
+                <form id="auth-form">
                     <div id="name-field" class="hidden mb-4">
                         <label class="block text-sm font-medium text-gray-700 mb-2">Full Name</label>
                         <input type="text" id="full_name" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
@@ -345,7 +151,7 @@ app.get('/', (c) => {
                         <label class="block text-sm font-medium text-gray-700 mb-2">Password</label>
                         <div class="relative">
                             <input type="password" id="password" required class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 pr-10">
-                            <button type="button" onclick="togglePasswordVisibility('password')" class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700">
+                            <button type="button" id="toggle-password" class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700">
                                 <i id="password-icon" class="fas fa-eye"></i>
                             </button>
                         </div>
@@ -355,7 +161,7 @@ app.get('/', (c) => {
                         <label class="block text-sm font-medium text-gray-700 mb-2">Confirm Password</label>
                         <div class="relative">
                             <input type="password" id="confirm_password" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 pr-10">
-                            <button type="button" onclick="togglePasswordVisibility('confirm_password')" class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700">
+                            <button type="button" id="toggle-confirm-password" class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700">
                                 <i id="confirm_password-icon" class="fas fa-eye"></i>
                             </button>
                         </div>
@@ -366,7 +172,7 @@ app.get('/', (c) => {
                     </button>
                     <p class="text-center mt-4 text-gray-600">
                         <span id="auth-switch-text">Don't have an account?</span>
-                        <button type="button" onclick="toggleAuthMode()" class="text-blue-600 hover:underline ml-1" id="auth-switch-btn">Register</button>
+                        <button type="button" id="auth-switch-btn" class="text-blue-600 hover:underline ml-1">Register</button>
                     </p>
                 </form>
             </div>
@@ -427,7 +233,7 @@ app.get('/', (c) => {
                 <h2 class="text-xl font-bold text-gray-800 mb-4">
                     <i class="fas fa-upload mr-2 text-blue-600"></i>Upload New Batch
                 </h2>
-                <form id="upload-form" onsubmit="handleUpload(event)" class="space-y-4">
+                <form id="upload-form" class="space-y-4">
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-2">Batch Name</label>
@@ -458,7 +264,7 @@ app.get('/', (c) => {
                     <h2 class="text-xl font-bold text-gray-800">
                         <i class="fas fa-list mr-2 text-blue-600"></i>Your Batches
                     </h2>
-                    <button onclick="loadBatches()" class="text-blue-600 hover:text-blue-700">
+                    <button id="refresh-batches" class="text-blue-600 hover:text-blue-700">
                         <i class="fas fa-sync-alt mr-1"></i>Refresh
                     </button>
                 </div>
@@ -490,19 +296,19 @@ app.get('/', (c) => {
         <div id="batch-detail" class="hidden">
             <div class="flex items-center justify-between mb-6">
                 <div>
-                    <button onclick="showDashboard()" class="text-blue-600 hover:text-blue-700 mb-2">
+                    <button id="back-to-dashboard" class="text-blue-600 hover:text-blue-700 mb-2">
                         <i class="fas fa-arrow-left mr-2"></i>Back to Dashboard
                     </button>
                     <h2 id="batch-detail-title" class="text-2xl font-bold text-gray-800"></h2>
                 </div>
                 <div class="space-x-2">
-                    <button onclick="processBatch()" id="process-btn" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition">
+                    <button id="process-btn" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition">
                         <i class="fas fa-play mr-2"></i>Process
                     </button>
-                    <button onclick="exportBatch('xlsx')" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition">
+                    <button id="export-xlsx-btn" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition">
                         <i class="fas fa-file-excel mr-2"></i>Export Excel
                     </button>
-                    <button onclick="exportBatch('csv')" class="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-lg transition">
+                    <button id="export-csv-btn" class="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-lg transition">
                         <i class="fas fa-file-csv mr-2"></i>Export CSV
                     </button>
                 </div>
@@ -537,7 +343,7 @@ app.get('/', (c) => {
                 <div class="flex justify-between items-center mb-4">
                     <h3 class="text-lg font-bold text-gray-800">Entities</h3>
                     <div class="flex space-x-2">
-                        <select id="status-filter" onchange="filterEntities()" class="px-3 py-2 border rounded-lg">
+                        <select id="status-filter" class="px-3 py-2 border rounded-lg">
                             <option value="">All Statuses</option>
                             <option value="matched">Matched</option>
                             <option value="confirmed">Confirmed</option>
@@ -545,7 +351,7 @@ app.get('/', (c) => {
                             <option value="multiple_matches">Multiple Matches</option>
                             <option value="pending">Pending</option>
                         </select>
-                        <input type="text" id="entity-search" placeholder="Search..." onkeyup="filterEntities()" class="px-3 py-2 border rounded-lg">
+                        <input type="text" id="entity-search" placeholder="Search..." class="px-3 py-2 border rounded-lg">
                     </div>
                 </div>
                 <div class="overflow-x-auto">
@@ -579,7 +385,7 @@ app.get('/', (c) => {
             <div class="bg-white rounded-xl p-6 max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto card-shadow animate-fade-in">
                 <div class="flex justify-between items-center mb-6">
                     <h2 class="text-xl font-bold text-gray-800">Entity Details</h2>
-                    <button onclick="closeEntityModal()" class="text-gray-500 hover:text-gray-700">
+                    <button id="close-entity-modal" class="text-gray-500 hover:text-gray-700">
                         <i class="fas fa-times text-xl"></i>
                     </button>
                 </div>
@@ -626,42 +432,10 @@ app.get('/', (c) => {
         </div>
     </main>
 
-    <script src="/static/app.js?v=7a53c28"></script>
-    <script>
-        // Attach event listeners after DOM loads
-        document.addEventListener('DOMContentLoaded', () => {
-            console.log('✅ Attaching button listeners');
-            
-            // Login buttons
-            const navLoginBtn = document.getElementById('nav-login-btn');
-            const getStartedBtn = document.getElementById('get-started-btn');
-            
-            if (navLoginBtn) {
-                navLoginBtn.addEventListener('click', () => {
-                    console.log('Nav login clicked');
-                    if (typeof window.showLogin === 'function') {
-                        window.showLogin();
-                    } else {
-                        console.error('showLogin not defined');
-                    }
-                });
-            }
-            
-            if (getStartedBtn) {
-                getStartedBtn.addEventListener('click', () => {
-                    console.log('Get started clicked');
-                    if (typeof window.showLogin === 'function') {
-                        window.showLogin();
-                    } else {
-                        console.error('showLogin not defined');
-                    }
-                });
-            }
-            
-            console.log('✅ Button listeners attached');
-            console.log('window.showLogin type:', typeof window.showLogin);
-        });
-    </script>
+    <!-- Main application script -->
+    <script src="/static/app.js"></script>
+    <!-- Event listener setup script - must be external for CSP -->
+    <script src="/static/events.js"></script>
 </body>
 </html>
   `)

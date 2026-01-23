@@ -1,6 +1,6 @@
 """Authentication service with refresh token rotation."""
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 from uuid import UUID
 
@@ -11,10 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from app.config import settings
-from app.models.user import User
+from app.models.user import User, API_KEY_PREFIX_LENGTH, TOKEN_FAMILY_LENGTH, TOKEN_JTI_LENGTH
 from app.schemas.user import TokenData
 
 logger = structlog.get_logger()
+
+# Constants
+API_KEY_LENGTH = 32
 
 
 class AuthService:
@@ -46,7 +49,7 @@ class AuthService:
         The token includes a version number that must match the user's
         current token_version for the token to be valid.
         """
-        expire = datetime.utcnow() + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
         to_encode = {
             "sub": str(user_id),
             "email": email,
@@ -78,12 +81,12 @@ class AuthService:
         """
         # Generate new family ID if not provided (new login)
         if not family_id:
-            family_id = secrets.token_urlsafe(32)
+            family_id = secrets.token_urlsafe(TOKEN_FAMILY_LENGTH)
         
         # Generate unique token ID for this specific token
-        jti = secrets.token_urlsafe(16)
+        jti = secrets.token_urlsafe(TOKEN_JTI_LENGTH)
         
-        expire = datetime.utcnow() + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
+        expire = datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
         to_encode = {
             "sub": str(user_id),
             "exp": expire,
@@ -122,9 +125,22 @@ class AuthService:
             return None
     
     @classmethod
-    def generate_api_key(cls) -> str:
-        """Generate a secure API key."""
-        return secrets.token_urlsafe(32)
+    def generate_api_key(cls) -> Tuple[str, str, str]:
+        """
+        Generate a secure API key.
+        
+        Returns:
+            Tuple of (full_key, key_hash, key_prefix)
+        """
+        full_key = secrets.token_urlsafe(API_KEY_LENGTH)
+        key_hash = cls.pwd_context.hash(full_key)
+        key_prefix = full_key[:API_KEY_PREFIX_LENGTH]
+        return full_key, key_hash, key_prefix
+    
+    @classmethod
+    def verify_api_key(cls, plain_key: str, hashed_key: str) -> bool:
+        """Verify an API key against its hash."""
+        return cls.pwd_context.verify(plain_key, hashed_key)
     
     @classmethod
     async def get_user_by_email(cls, db: AsyncSession, email: str) -> Optional[User]:
@@ -140,9 +156,28 @@ class AuthService:
     
     @classmethod
     async def get_user_by_api_key(cls, db: AsyncSession, api_key: str) -> Optional[User]:
-        """Get a user by API key."""
-        result = await db.execute(select(User).where(User.api_key == api_key))
-        return result.scalar_one_or_none()
+        """
+        Get a user by API key.
+        
+        First filters by prefix for efficiency, then verifies the full hash.
+        """
+        if not api_key or len(api_key) < API_KEY_PREFIX_LENGTH:
+            return None
+        
+        key_prefix = api_key[:API_KEY_PREFIX_LENGTH]
+        
+        # Find users with matching prefix
+        result = await db.execute(
+            select(User).where(User.api_key_prefix == key_prefix)
+        )
+        users = result.scalars().all()
+        
+        # Verify the full key hash for each candidate
+        for user in users:
+            if user.api_key_hash and cls.verify_api_key(api_key, user.api_key_hash):
+                return user
+        
+        return None
     
     @classmethod
     async def authenticate_user(cls, db: AsyncSession, email: str, password: str) -> Optional[User]:
@@ -179,18 +214,23 @@ class AuthService:
     @classmethod
     async def update_last_login(cls, db: AsyncSession, user: User) -> User:
         """Update user's last login timestamp."""
-        user.last_login_at = datetime.utcnow()
+        user.last_login_at = datetime.now(timezone.utc)
         await db.flush()
         return user
     
     @classmethod
     async def generate_user_api_key(cls, db: AsyncSession, user: User) -> str:
-        """Generate and save a new API key for a user."""
-        api_key = cls.generate_api_key()
-        user.api_key = api_key
-        user.api_key_created_at = datetime.utcnow()
+        """
+        Generate and save a new API key for a user.
+        
+        Returns the full API key (only shown once - not stored in plain text).
+        """
+        full_key, key_hash, key_prefix = cls.generate_api_key()
+        user.api_key_hash = key_hash
+        user.api_key_prefix = key_prefix
+        user.api_key_created_at = datetime.now(timezone.utc)
         await db.flush()
-        return api_key
+        return full_key  # Return the full key - user must save it
     
     @classmethod
     async def validate_refresh_token(

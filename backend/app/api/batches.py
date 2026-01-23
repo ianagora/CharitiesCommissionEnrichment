@@ -267,109 +267,119 @@ async def delete_batch(
     logger.info("Batch deleted", batch_id=str(batch_id), user_id=str(current_user.id))
 
 
+# Constants for batch processing
+MAX_OWNERSHIP_DEPTH = 10
+DEFAULT_OWNERSHIP_DEPTH = 3
+
+
 async def process_batch_background(
     batch_id: UUID,
     use_ai: bool,
     build_ownership: bool,
     max_depth: int,
 ):
-    """Background task to process a batch."""
+    """
+    Background task to process a batch.
+    
+    This function runs asynchronously to resolve entities against the
+    Charity Commission database and optionally build ownership trees.
+    """
     import traceback
-    import sys
-    from datetime import datetime
+    from datetime import datetime, timezone
     from app.database import get_db_context
     
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
     
-    # Log to both stdout and stderr for Railway visibility
-    def log(msg, level="DEBUG"):
-        timestamp = datetime.utcnow().isoformat()
-        formatted = f"[{level}] [{timestamp}] [batch={batch_id}] {msg}"
-        print(formatted, file=sys.stdout, flush=True)
-        print(formatted, file=sys.stderr, flush=True)
-    
-    log(f"=== BACKGROUND TASK STARTED ===")
-    log(f"Parameters: use_ai={use_ai}, build_ownership={build_ownership}, max_depth={max_depth}")
-    logger.info("Background task started", 
-                batch_id=str(batch_id), 
-                use_ai=use_ai, 
-                build_ownership=build_ownership,
-                max_depth=max_depth)
+    logger.info(
+        "Background task started", 
+        batch_id=str(batch_id), 
+        use_ai=use_ai, 
+        build_ownership=build_ownership,
+        max_depth=max_depth
+    )
     
     try:
-        log("Acquiring database context...")
         async with get_db_context() as db:
-            log("Database context acquired successfully")
-            
             try:
                 # Process entities
-                log("Creating EntityResolverService...")
-                resolver = EntityResolverService(db)
-                log("EntityResolverService created")
+                batch = await _resolve_batch_entities(db, batch_id, use_ai)
                 
-                log("Calling process_batch...")
-                batch = await resolver.process_batch(batch_id, use_ai=use_ai)
-                
-                duration = (datetime.utcnow() - start_time).total_seconds()
-                log(f"process_batch completed in {duration:.2f}s", level="INFO")
-                log(f"Final stats: total={batch.total_records}, processed={batch.processed_records}, matched={batch.matched_records}, failed={batch.failed_records}")
+                duration = (datetime.now(timezone.utc) - start_time).total_seconds()
                 
                 # Build ownership trees if requested
                 if build_ownership:
-                    log("Starting ownership tree building...")
-                    builder = OwnershipTreeBuilder(db)
-                    await builder.build_trees_for_batch(batch_id, max_depth=max_depth)
-                    log("Ownership trees completed")
+                    await _build_batch_ownership_trees(db, batch_id, max_depth)
                 
-                log(f"=== BACKGROUND TASK COMPLETED SUCCESSFULLY ===", level="INFO")
-                logger.info("Batch processing completed", 
-                           batch_id=str(batch_id),
-                           duration_seconds=duration,
-                           total_records=batch.total_records,
-                           matched_records=batch.matched_records,
-                           failed_records=batch.failed_records,
-                           final_status=str(batch.status))
+                logger.info(
+                    "Batch processing completed", 
+                    batch_id=str(batch_id),
+                    duration_seconds=duration,
+                    total_records=batch.total_records,
+                    matched_records=batch.matched_records,
+                    failed_records=batch.failed_records,
+                    final_status=str(batch.status)
+                )
                 
             except Exception as e:
-                duration = (datetime.utcnow() - start_time).total_seconds()
-                error_traceback = traceback.format_exc()
-                log(f"=== ERROR in batch processing after {duration:.2f}s ===", level="ERROR")
-                log(f"Exception type: {type(e).__name__}", level="ERROR")
-                log(f"Exception message: {str(e)}", level="ERROR")
-                log(f"Traceback:\n{error_traceback}", level="ERROR")
-                
-                logger.error("Batch processing failed", 
-                            batch_id=str(batch_id), 
-                            error=str(e), 
-                            error_type=type(e).__name__,
-                            duration_seconds=duration,
-                            traceback=error_traceback)
-                
-                # Update batch status to failed
-                try:
-                    result = await db.execute(select(EntityBatch).where(EntityBatch.id == batch_id))
-                    batch = result.scalar_one_or_none()
-                    if batch:
-                        batch.status = BatchStatus.FAILED
-                        batch.error_message = f"{type(e).__name__}: {str(e)}"
-                        await db.commit()
-                        log("Batch status updated to FAILED")
-                except Exception as update_err:
-                    log(f"Failed to update batch status: {update_err}", level="ERROR")
+                await _handle_batch_processing_error(db, batch_id, e, start_time)
                     
     except Exception as outer_e:
-        duration = (datetime.utcnow() - start_time).total_seconds()
-        error_traceback = traceback.format_exc()
-        log(f"=== OUTER ERROR (database/connection issue) after {duration:.2f}s ===", level="ERROR")
-        log(f"Exception type: {type(outer_e).__name__}", level="ERROR") 
-        log(f"Exception message: {str(outer_e)}", level="ERROR")
-        log(f"Traceback:\n{error_traceback}", level="ERROR")
-        
-        logger.error("Background task outer error", 
-                    batch_id=str(batch_id), 
-                    error=str(outer_e),
-                    error_type=type(outer_e).__name__,
-                    traceback=error_traceback)
+        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+        logger.error(
+            "Background task database/connection error", 
+            batch_id=str(batch_id), 
+            error=str(outer_e),
+            error_type=type(outer_e).__name__,
+            duration_seconds=duration,
+            traceback=traceback.format_exc()
+        )
+
+
+async def _resolve_batch_entities(db, batch_id: UUID, use_ai: bool):
+    """Resolve entities in a batch against Charity Commission data."""
+    resolver = EntityResolverService(db)
+    return await resolver.process_batch(batch_id, use_ai=use_ai)
+
+
+async def _build_batch_ownership_trees(db, batch_id: UUID, max_depth: int):
+    """Build ownership trees for resolved entities in a batch."""
+    logger.debug("Starting ownership tree building", batch_id=str(batch_id))
+    builder = OwnershipTreeBuilder(db)
+    await builder.build_trees_for_batch(batch_id, max_depth=max_depth)
+    logger.debug("Ownership trees completed", batch_id=str(batch_id))
+
+
+async def _handle_batch_processing_error(db, batch_id: UUID, error: Exception, start_time):
+    """Handle errors during batch processing."""
+    import traceback
+    from datetime import datetime, timezone
+    
+    duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+    
+    logger.error(
+        "Batch processing failed", 
+        batch_id=str(batch_id), 
+        error=str(error), 
+        error_type=type(error).__name__,
+        duration_seconds=duration,
+        traceback=traceback.format_exc()
+    )
+    
+    # Update batch status to failed
+    try:
+        result = await db.execute(select(EntityBatch).where(EntityBatch.id == batch_id))
+        batch = result.scalar_one_or_none()
+        if batch:
+            batch.status = BatchStatus.FAILED
+            batch.error_message = f"{type(error).__name__}: {str(error)}"
+            await db.commit()
+            logger.debug("Batch status updated to FAILED", batch_id=str(batch_id))
+    except Exception as update_err:
+        logger.error(
+            "Failed to update batch status",
+            batch_id=str(batch_id),
+            error=str(update_err)
+        )
 
 
 @router.post("/{batch_id}/process", response_model=EntityBatchResponse)
@@ -385,8 +395,7 @@ async def process_batch(
     
     This runs in the background. Poll the batch status to check progress.
     """
-    import sys
-    print(f"[DEBUG] POST /process called for batch_id={batch_id}", file=sys.stderr, flush=True)
+    logger.debug("Process batch request", batch_id=str(batch_id), user_id=str(current_user.id))
     
     result = await db.execute(
         select(EntityBatch)
@@ -396,34 +405,35 @@ async def process_batch(
     batch = result.scalar_one_or_none()
     
     if not batch:
-        print(f"[DEBUG] Batch not found: {batch_id}", file=sys.stderr, flush=True)
+        logger.warning("Batch not found", batch_id=str(batch_id), user_id=str(current_user.id))
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Batch not found",
         )
     
-    print(f"[DEBUG] Found batch: {batch.name}, current status={batch.status}", file=sys.stderr, flush=True)
-    
     if batch.status == BatchStatus.PROCESSING:
-        print(f"[DEBUG] Batch already processing", file=sys.stderr, flush=True)
+        logger.warning("Batch already processing", batch_id=str(batch_id))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Batch is already being processed",
         )
     
+    # Validate max_ownership_depth
+    max_depth = min(request.max_ownership_depth, MAX_OWNERSHIP_DEPTH)
+    if max_depth < 1:
+        max_depth = DEFAULT_OWNERSHIP_DEPTH
+    
     # Update status
     batch.status = BatchStatus.PROCESSING
     await db.flush()
-    print(f"[DEBUG] Updated batch status to PROCESSING", file=sys.stderr, flush=True)
     
     # Start background processing
-    print(f"[DEBUG] Adding background task for batch processing", file=sys.stderr, flush=True)
     background_tasks.add_task(
         process_batch_background,
         batch_id,
         request.use_ai_matching,
         request.build_ownership_tree,
-        request.max_ownership_depth,
+        max_depth,
     )
     
     logger.info(
@@ -432,9 +442,9 @@ async def process_batch(
         user_id=str(current_user.id),
         use_ai=request.use_ai_matching,
         build_ownership=request.build_ownership_tree,
+        max_depth=max_depth,
     )
     
-    print(f"[DEBUG] Returning from /process endpoint, background task scheduled", file=sys.stderr, flush=True)
     return batch
 
 

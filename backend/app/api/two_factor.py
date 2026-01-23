@@ -39,6 +39,12 @@ class TwoFactorDisableRequest(BaseModel):
     token: str  # Either TOTP token or backup code
 
 
+# In-memory storage for pending 2FA setups (secret stored only until verified)
+# In production, consider using Redis with TTL for distributed deployments
+_pending_2fa_setups: dict = {}
+PENDING_2FA_EXPIRY_MINUTES = 10
+
+
 @router.post("/2fa/setup", response_model=TwoFactorSetupResponse)
 async def setup_2fa(
     current_user: User = Depends(get_current_active_user),
@@ -47,6 +53,10 @@ async def setup_2fa(
     """
     Initiate 2FA setup for the current user.
     Returns QR code and backup codes.
+    
+    SECURITY: The secret is stored in memory only until verified.
+    It is NOT written to the database until the user successfully
+    verifies with a valid TOTP code.
     """
     if current_user.two_factor_enabled:
         raise HTTPException(
@@ -57,13 +67,16 @@ async def setup_2fa(
     # Generate 2FA setup data
     setup_data = TwoFactorService.setup_2fa(current_user.email)
     
-    # Store secret temporarily (not enabled yet until verified)
-    current_user.two_factor_secret = setup_data["secret"]
-    current_user.backup_codes = setup_data["backup_codes_json"]
+    # Store secret temporarily in memory (NOT in database until verified)
+    # This prevents abandoned setups from leaving secrets in the database
+    from datetime import datetime, timezone, timedelta
+    _pending_2fa_setups[str(current_user.id)] = {
+        "secret": setup_data["secret"],
+        "backup_codes_json": setup_data["backup_codes_json"],
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=PENDING_2FA_EXPIRY_MINUTES),
+    }
     
-    await db.commit()
-    
-    logger.info("2FA setup initiated", user_id=str(current_user.id), email=current_user.email)
+    logger.info("2FA setup initiated (pending verification)", user_id=str(current_user.id))
     
     return TwoFactorSetupResponse(
         qr_code=setup_data["qr_code"],
@@ -81,12 +94,11 @@ async def verify_and_enable_2fa(
     """
     Verify TOTP token and enable 2FA.
     This must be called after /2fa/setup to activate 2FA.
+    
+    SECURITY: Only after successful verification is the secret
+    written to the database.
     """
-    if not current_user.two_factor_secret:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Please initiate 2FA setup first"
-        )
+    from datetime import datetime, timezone
     
     if current_user.two_factor_enabled:
         raise HTTPException(
@@ -94,9 +106,27 @@ async def verify_and_enable_2fa(
             detail="2FA is already enabled"
         )
     
-    # Verify the token
+    # Check for pending setup in memory
+    user_id_str = str(current_user.id)
+    pending_setup = _pending_2fa_setups.get(user_id_str)
+    
+    if not pending_setup:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please initiate 2FA setup first"
+        )
+    
+    # Check if pending setup has expired
+    if datetime.now(timezone.utc) > pending_setup["expires_at"]:
+        del _pending_2fa_setups[user_id_str]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="2FA setup has expired. Please start again."
+        )
+    
+    # Verify the token against the pending secret
     is_valid = TwoFactorService.verify_totp(
-        current_user.two_factor_secret,
+        pending_setup["secret"],
         verify_data.token
     )
     
@@ -107,9 +137,14 @@ async def verify_and_enable_2fa(
             detail="Invalid verification code"
         )
     
-    # Enable 2FA
+    # Verification successful - NOW store the secret in the database
+    current_user.two_factor_secret = pending_setup["secret"]
+    current_user.backup_codes = pending_setup["backup_codes_json"]
     current_user.two_factor_enabled = True
     await db.commit()
+    
+    # Clear pending setup from memory
+    del _pending_2fa_setups[user_id_str]
     
     logger.info("2FA enabled", user_id=str(current_user.id), email=current_user.email)
     

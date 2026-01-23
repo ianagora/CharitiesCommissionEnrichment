@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     
     # Allowed CORS methods and headers (explicit, not wildcards)
     CORS_ALLOW_METHODS: str = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
-    CORS_ALLOW_HEADERS: str = "Authorization,Content-Type,X-API-Key,Accept,Origin"
+    CORS_ALLOW_HEADERS: str = "Authorization,Content-Type,X-API-Key,Accept,Origin,X-CSRF-Token"
     
     @property
     def cors_origins_list(self) -> list[str]:
