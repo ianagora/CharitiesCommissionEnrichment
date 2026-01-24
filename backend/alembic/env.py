@@ -21,7 +21,13 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Set the database URL from settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("+asyncpg", ""))
+# Ensure we use asyncpg for async operations
+database_url = str(settings.DATABASE_URL)
+if database_url.startswith("postgresql://"):
+    database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+elif "+asyncpg" not in database_url and database_url.startswith("postgresql"):
+    database_url = database_url.replace("postgresql", "postgresql+asyncpg", 1)
+config.set_main_option("sqlalchemy.url", database_url)
 
 # add your model's MetaData object here
 target_metadata = Base.metadata
