@@ -17,3 +17,6 @@
 
 /api/*
   Access-Control-Allow-Origin: https://charity-data-enrichment.pages.dev
+  Access-Control-Allow-Credentials: true
+  Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS
+  Access-Control-Allow-Headers: Authorization, Content-Type, X-CSRF-Token

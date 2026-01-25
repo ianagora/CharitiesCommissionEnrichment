@@ -138,7 +138,7 @@ window.handleAuth = async function(event) {
         if (isLoginMode) {
             // Login
             console.log('Logging in with:', email);
-            const response = await axios.post(API_BASE + '/auth/login', { email, password });
+            const response = await axios.post(API_BASE + '/auth/login', { email, password }, { withCredentials: true });
             accessToken = response.data.access_token;
             refreshToken = response.data.refresh_token;
             localStorage.setItem('accessToken', accessToken);
@@ -156,11 +156,11 @@ window.handleAuth = async function(event) {
                 password, 
                 full_name,
                 organization: orgValue
-            });
+            }, { withCredentials: true });
             console.log('Registration successful, now logging in...');
             
             // Auto-login after registration
-            const response = await axios.post(API_BASE + '/auth/login', { email, password });
+            const response = await axios.post(API_BASE + '/auth/login', { email, password }, { withCredentials: true });
             accessToken = response.data.access_token;
             refreshToken = response.data.refresh_token;
             localStorage.setItem('accessToken', accessToken);
