@@ -1,0 +1,3 @@
+# Force Cloudflare Pages deployment
+# This file triggers a new deployment with updated environment variables
+Deployment triggered at: $(date)
