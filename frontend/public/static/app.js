@@ -1755,13 +1755,7 @@ window.handleAuth = async function(event) {
             } else if (error.response?.status === 400) {
                 errorMsg = error.response?.data?.detail || 'Bad request. Please check your input.';
             } else if (!error.response) {
-                errorMsg = '❌ Cannot connect to server. Please check:
-
-1. Backend is running at: ' + API_BASE + '
-2. CORS is properly configured
-3. Your internet connection
-
-Try again in a few moments.';
+                errorMsg = '❌ Cannot connect to server. Please check:\n\n1. Backend is running at: ' + API_BASE + '\n2. CORS is properly configured\n3. Your internet connection\n\nTry again in a few moments.';
             }
             alert(errorMsg);
         }
