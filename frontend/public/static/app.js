@@ -1766,7 +1766,6 @@ window.processBatch = processBatch;
 window.exportBatch = exportBatch;
 window.closeEntityModal = closeEntityModal;
 window.showAdminPanel = showAdminPanel;
-window.showSettings = showSettings;
 window.appJsLoaded = true;
 
 console.log('✅ Admin Panel & Mandatory 2FA Loaded');
