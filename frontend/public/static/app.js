@@ -1661,8 +1661,8 @@ window.handleAuth = async function(event) {
         }
         
         // Validate password strength
-        if (password.length < 8) {
-            alert('❌ Password must be at least 8 characters long');
+        if (password.length < 10) {
+            alert('❌ Password must be at least 10 characters long');
             return;
         }
         if (!/[A-Z]/.test(password)) {
