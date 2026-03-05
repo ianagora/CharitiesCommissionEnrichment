@@ -19,6 +19,7 @@ from app.services.auth import AuthService
 from app.services.rate_limit import login_rate_limiter
 from app.api.deps import get_current_active_user
 from app.config import settings
+from app.utils.security import sanitize_string
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -48,13 +49,17 @@ async def register(
             detail="Registration failed. Please check your information or contact support.",
         )
     
+    # Sanitise free-text profile fields to prevent stored XSS
+    safe_full_name = sanitize_string(user_data.full_name, max_length=255) if user_data.full_name else None
+    safe_organization = sanitize_string(user_data.organization, max_length=255) if user_data.organization else None
+
     # Create user
     user = await AuthService.create_user(
         db,
         email=user_data.email,
         password=user_data.password,
-        full_name=user_data.full_name,
-        organization=user_data.organization,
+        full_name=safe_full_name,
+        organization=safe_organization,
     )
     
     # Create audit log
@@ -170,31 +175,32 @@ async def login(
             detail="User account is inactive",
         )
     
-    # Check if 2FA is enabled
+    # Check if 2FA is enabled - MUST be verified server-side before issuing tokens
     if user.two_factor_enabled:
         if not login_data.totp_code:
+            # Do NOT issue any tokens - require 2FA code first
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="2FA code required",
                 headers={"X-Require-2FA": "true"},
             )
-        
+
         # Import here to avoid circular dependency
         from app.services.two_factor import TwoFactorService
-        
+
         # Try TOTP first
         totp_valid = TwoFactorService.verify_totp(
             user.two_factor_secret,
             login_data.totp_code
         )
-        
+
         # If TOTP fails, try backup code
         if not totp_valid and user.backup_codes:
             code_valid, updated_codes = TwoFactorService.verify_backup_code(
                 user.backup_codes,
                 login_data.totp_code
             )
-            
+
             if code_valid:
                 # Update backup codes (remove used code)
                 user.backup_codes = updated_codes
@@ -228,13 +234,18 @@ async def login(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid 2FA code",
             )
-    
+
     # Successful login - clear any failed attempts
     await login_rate_limiter.record_successful_login(login_data.email, client_ip)
-    
+
+    # Invalidate all existing sessions before creating new tokens
+    # This ensures only one active session per user (prevents concurrent sessions)
+    user.invalidate_all_tokens()
+    await db.flush()
+
     # Update last login
     await AuthService.update_last_login(db, user)
-    
+
     # Create tokens with rotation (new token family for fresh login)
     access_token, refresh_token, _ = await AuthService.rotate_refresh_token(db, user)
     
@@ -377,9 +388,9 @@ async def update_current_user_profile(
 ):
     """Update current user profile."""
     if user_data.full_name is not None:
-        current_user.full_name = user_data.full_name
+        current_user.full_name = sanitize_string(user_data.full_name, max_length=255)
     if user_data.organization is not None:
-        current_user.organization = user_data.organization
+        current_user.organization = sanitize_string(user_data.organization, max_length=255)
     
     await db.flush()
     return UserResponse.from_user(current_user)

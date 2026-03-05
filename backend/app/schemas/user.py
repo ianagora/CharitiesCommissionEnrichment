@@ -13,9 +13,9 @@ PASSWORD_SPECIAL_CHARS = "!@#$%^&*()_+-=[]{}|;:',.<>?/`~"
 def validate_password_complexity(password: str) -> str:
     """
     Validate password meets complexity requirements.
-    
+
     Requirements:
-    - At least 8 characters
+    - At least 10 characters
     - At least one uppercase letter
     - At least one lowercase letter
     - At least one digit
@@ -35,7 +35,7 @@ def validate_password_complexity(password: str) -> str:
 class UserCreate(BaseModel):
     """Schema for creating a new user."""
     email: EmailStr
-    password: str = Field(..., min_length=8, max_length=128)
+    password: str = Field(..., min_length=10, max_length=128)
     full_name: Optional[str] = Field(None, max_length=255)
     organization: Optional[str] = Field(None, max_length=255)
     
@@ -53,22 +53,23 @@ class UserUpdate(BaseModel):
 
 
 class UserResponse(BaseModel):
-    """Schema for user response - excludes sensitive data."""
+    """Schema for user response - excludes sensitive and privilege-related data.
+
+    SECURITY: Administrative flags (is_superuser, is_verified) are NOT exposed
+    to the client to prevent client-side privilege manipulation. Authorisation
+    decisions are enforced exclusively server-side.
+    """
     id: UUID
     email: EmailStr
     full_name: Optional[str]
     organization: Optional[str]
-    is_active: bool
-    is_superuser: bool = False
-    is_verified: bool
-    has_api_key: bool = False  # Only indicate if API key exists, don't expose it
     two_factor_enabled: bool = False
     created_at: datetime
     last_login_at: Optional[datetime]
-    
+
     class Config:
         from_attributes = True
-    
+
     @classmethod
     def from_user(cls, user) -> "UserResponse":
         """Create response from User model with computed fields."""
@@ -77,10 +78,6 @@ class UserResponse(BaseModel):
             email=user.email,
             full_name=user.full_name,
             organization=user.organization,
-            is_active=user.is_active,
-            is_superuser=user.is_superuser,
-            is_verified=user.is_verified,
-            has_api_key=user.api_key_hash is not None,
             two_factor_enabled=user.two_factor_enabled,
             created_at=user.created_at,
             last_login_at=user.last_login_at,
@@ -122,7 +119,7 @@ class TokenData(BaseModel):
 class PasswordChange(BaseModel):
     """Schema for changing password."""
     current_password: str
-    new_password: str = Field(..., min_length=8, max_length=128)
+    new_password: str = Field(..., min_length=10, max_length=128)
     
     @field_validator("new_password")
     @classmethod

@@ -214,7 +214,14 @@ async def disable_2fa(
 async def get_2fa_status(
     current_user: User = Depends(get_current_active_user),
 ):
-    """Get 2FA status for the current user."""
+    """
+    Get 2FA status for the current user.
+
+    Note: The 2FA enforcement is handled entirely server-side during login.
+    This endpoint is for UI display purposes only - modifying this response
+    in transit cannot bypass 2FA as the server validates 2FA during
+    authentication before issuing any tokens.
+    """
     return {
         "enabled": current_user.two_factor_enabled,
         "has_backup_codes": current_user.backup_codes is not None

@@ -296,9 +296,15 @@ async def update_entity(
             detail="Entity not found",
         )
     
-    # Update fields
+    # Update only allowlisted fields (prevent mass assignment)
+    ALLOWED_UPDATE_FIELDS = {"entity_type"}
     update_dict = update_data.model_dump(exclude_unset=True)
     for key, value in update_dict.items():
+        if key not in ALLOWED_UPDATE_FIELDS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Field '{key}' cannot be modified",
+            )
         setattr(entity, key, value)
     
     await db.flush()

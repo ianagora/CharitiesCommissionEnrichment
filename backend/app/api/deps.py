@@ -3,7 +3,7 @@ from typing import Optional
 from uuid import UUID
 import structlog
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,21 +18,38 @@ logger = structlog.get_logger()
 bearer_scheme = HTTPBearer(auto_error=False)
 api_key_header = APIKeyHeader(name=settings.API_KEY_HEADER, auto_error=False)
 
+# Endpoints that are exempt from mandatory 2FA enforcement.
+# These are the minimum set needed for a user to complete 2FA setup or log out.
+TWO_FACTOR_EXEMPT_PATHS = {
+    "/api/v1/auth/2fa/setup",
+    "/api/v1/auth/2fa/verify",
+    "/api/v1/auth/2fa/status",
+    "/api/v1/auth/me",
+    "/api/v1/auth/logout",
+}
+
 
 async def get_current_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     api_key: Optional[str] = Depends(api_key_header),
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """
     Get the current authenticated user from JWT token or API key.
-    
+
     Validates token version to ensure tokens haven't been invalidated
     by logout or password change.
-    
+
+    Enforces 2FA completion: if a user has 2FA enabled but hasn't completed
+    verification (indicated by two_factor_enabled being True on the user),
+    access is only granted to 2FA-related endpoints.
+
     Raises:
         HTTPException: If authentication fails
     """
+    user = None
+
     # Try JWT token first
     if credentials:
         token_data = AuthService.decode_token(credentials.credentials)
@@ -42,7 +59,7 @@ async def get_current_user(
                 # Verify token version matches (for logout/password change invalidation)
                 user_token_version = user.token_version or 0
                 token_version = token_data.token_version or 0
-                
+
                 if token_version != user_token_version:
                     logger.warning(
                         "Token version mismatch - token invalidated",
@@ -55,20 +72,39 @@ async def get_current_user(
                         detail="Token has been invalidated. Please log in again.",
                         headers={"WWW-Authenticate": "Bearer"},
                     )
-                
-                return user
-    
+            else:
+                user = None
+
     # Try API key
-    if api_key:
+    if not user and api_key:
         user = await AuthService.get_user_by_api_key(db, api_key)
-        if user and user.is_active:
-            return user
-    
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid authentication credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+        if user and not user.is_active:
+            user = None
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Enforce mandatory 2FA: users who have not completed 2FA setup are
+    # restricted to 2FA-related endpoints only. This prevents the bypass where
+    # a token issued at first login (before 2FA enrolment) grants full access.
+    request_path = request.url.path
+    if not user.two_factor_enabled and request_path not in TWO_FACTOR_EXEMPT_PATHS:
+        logger.warning(
+            "Access blocked - 2FA setup not completed",
+            user_id=str(user.id),
+            path=request_path,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Two-factor authentication setup is required before accessing this resource.",
+            headers={"X-Require-2FA-Setup": "true"},
+        )
+
+    return user
 
 
 async def get_current_active_user(
@@ -106,6 +142,7 @@ async def get_current_superuser(
 
 
 async def get_optional_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     api_key: Optional[str] = Depends(api_key_header),
     db: AsyncSession = Depends(get_db),
@@ -114,6 +151,6 @@ async def get_optional_user(
     Get the current user if authenticated, otherwise return None.
     """
     try:
-        return await get_current_user(credentials, api_key, db)
+        return await get_current_user(request, credentials, api_key, db)
     except HTTPException:
         return None

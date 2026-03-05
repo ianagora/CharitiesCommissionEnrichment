@@ -18,12 +18,8 @@ class EntityCreate(BaseModel):
 
 
 class EntityUpdate(BaseModel):
-    """Schema for updating an entity."""
-    resolved_name: Optional[str] = None
+    """Schema for updating an entity - allowlisted fields only."""
     entity_type: Optional[EntityType] = None
-    charity_number: Optional[str] = None
-    company_number: Optional[str] = None
-    resolution_status: Optional[ResolutionStatus] = None
 
 
 class EntityResolutionResponse(BaseModel):
@@ -166,11 +162,9 @@ class BatchProcessRequest(BaseModel):
 
 
 class ResolutionConfirmRequest(BaseModel):
-    """Schema for confirming entity resolution."""
-    entity_id: UUID
+    """Schema for confirming entity resolution - allowlisted fields only."""
     resolution_id: Optional[UUID] = None  # If None, mark as no match
-    charity_number: Optional[str] = None  # For manual entry
-    company_number: Optional[str] = None
+    charity_number: Optional[str] = Field(None, max_length=20, pattern=r"^[A-Za-z0-9\-]*$")  # For manual entry, alphanumeric only
 
 
 class ExportRequest(BaseModel):

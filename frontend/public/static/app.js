@@ -1237,12 +1237,10 @@ async function verify2FASetup() {
     }
 }
 
-// Show Admin Panel
+// Show Admin Panel (placeholder — requires dedicated backend admin endpoints)
 function showAdminPanel() {
-    if (!currentUser?.is_superuser) {
-        alert('Access denied. Admin privileges required.');
-        return;
-    }
+    alert('Admin panel requires dedicated backend admin endpoints.');
+    return;
     
     document.getElementById('dashboard').classList.add('hidden');
     document.getElementById('batch-detail').classList.add('hidden');
@@ -1634,21 +1632,14 @@ async function disable2FA() {
     }
 }
 
-// Update auth section to show admin link
+// Update auth section
+// NOTE: Admin status is enforced server-side only. The admin panel is a
+// placeholder and requires dedicated backend admin endpoints to function.
 const originalUpdateAuthSection = window.updateAuthSection;
 window.updateAuthSection = function(user) {
     if (originalUpdateAuthSection) originalUpdateAuthSection(user);
-    
+
     currentUser = user;
-    const authSection = document.getElementById('auth-section');
-    
-    if (user.is_superuser) {
-        const adminBtn = document.createElement('button');
-        adminBtn.onclick = showAdminPanel;
-        adminBtn.className = 'bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg transition mr-2';
-        adminBtn.innerHTML = '<i class="fas fa-cog mr-2"></i>Admin';
-        authSection.insertBefore(adminBtn, authSection.firstChild);
-    }
 };
 
 // Override login to check 2FA on success

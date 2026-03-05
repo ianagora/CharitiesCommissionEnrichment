@@ -17,6 +17,30 @@ import structlog
 
 logger = structlog.get_logger()
 
+# Characters that trigger formula interpretation in spreadsheet applications
+_FORMULA_PREFIXES = ('=', '+', '-', '@', '\t', '\r', '\n')
+
+
+def sanitize_cell_value(value) -> str:
+    """
+    Sanitise a cell value to prevent CSV/formula injection.
+
+    Spreadsheet applications interpret cells starting with =, +, -, @, tab,
+    or newline as formulas. This prefixes such values with a single quote
+    to force text interpretation, wraps in quotes, and escapes internal quotes.
+    """
+    if value is None:
+        return ""
+    text = str(value)
+    if not text:
+        return text
+    if text.startswith(_FORMULA_PREFIXES):
+        # Prefix with single quote to neutralise formula interpretation
+        text = "'" + text
+    # Escape any embedded double quotes
+    text = text.replace('"', '""')
+    return text
+
 
 class ExportService:
     """Service for exporting data to Excel with multiple tabs."""
@@ -121,7 +145,7 @@ class ExportService:
         
         # Title
         ws.merge_cells('A1:D1')
-        ws['A1'] = f"Charity Data Enrichment Report: {batch.name}"
+        ws['A1'] = f"Charity Data Enrichment Report: {sanitize_cell_value(batch.name)}"
         ws['A1'].font = Font(size=16, bold=True)
         ws['A1'].alignment = Alignment(horizontal='center')
         
@@ -131,7 +155,7 @@ class ExportService:
         
         info = [
             ("Batch ID:", str(batch.id)),
-            ("Batch Name:", batch.name),
+            ("Batch Name:", sanitize_cell_value(batch.name)),
             ("Original File:", batch.original_filename),
             ("Created:", batch.created_at.strftime("%Y-%m-%d %H:%M:%S") if batch.created_at else "N/A"),
             ("Processed:", batch.processing_completed_at.strftime("%Y-%m-%d %H:%M:%S") if batch.processing_completed_at else "N/A"),
@@ -175,25 +199,25 @@ class ExportService:
     async def _create_entities_sheet(self, wb: Workbook, entities: List[Entity]):
         """Create main entities data sheet."""
         ws = wb.create_sheet("Entities")
-        
-        # Prepare data
+
+        # Prepare data (sanitise all string values to prevent formula injection)
         data = []
         for entity in entities:
             data.append({
                 "Row #": entity.row_number,
-                "Original Name": entity.original_name,
-                "Resolved Name": entity.resolved_name,
+                "Original Name": sanitize_cell_value(entity.original_name),
+                "Resolved Name": sanitize_cell_value(entity.resolved_name),
                 "Entity Type": entity.entity_type.value if entity.entity_type else "",
-                "Charity Number": entity.charity_number,
-                "Company Number": entity.company_number,
-                "Status": entity.charity_status,
+                "Charity Number": sanitize_cell_value(entity.charity_number),
+                "Company Number": sanitize_cell_value(entity.company_number),
+                "Status": sanitize_cell_value(entity.charity_status),
                 "Resolution Status": entity.resolution_status.value if entity.resolution_status else "",
                 "Confidence": f"{entity.resolution_confidence:.1%}" if entity.resolution_confidence else "",
-                "Method": entity.resolution_method,
+                "Method": sanitize_cell_value(entity.resolution_method),
                 "Registration Date": entity.charity_registration_date.strftime("%Y-%m-%d") if entity.charity_registration_date else "",
-                "Website": entity.charity_website,
-                "Email": entity.charity_contact_email,
-                "Address": entity.charity_address,
+                "Website": sanitize_cell_value(entity.charity_website),
+                "Email": sanitize_cell_value(entity.charity_contact_email),
+                "Address": sanitize_cell_value(entity.charity_address),
             })
         
         if not data:
@@ -252,11 +276,11 @@ class ExportService:
         for res in resolutions:
             entity = entity_lookup.get(res.entity_id)
             data.append({
-                "Original Name": entity.original_name if entity else "",
-                "Candidate Name": res.candidate_name,
-                "Charity Number": res.charity_number,
+                "Original Name": sanitize_cell_value(entity.original_name) if entity else "",
+                "Candidate Name": sanitize_cell_value(res.candidate_name),
+                "Charity Number": sanitize_cell_value(res.charity_number),
                 "Confidence Score": f"{res.confidence_score:.1%}",
-                "Match Method": res.match_method,
+                "Match Method": sanitize_cell_value(res.match_method),
                 "Selected": "Yes" if res.is_selected else "No",
             })
         
@@ -318,14 +342,14 @@ class ExportService:
             owned = entity_lookup.get(ownership.owned_id)
             
             data.append({
-                "Owner Name": owner.resolved_name or owner.original_name if owner else "Unknown",
-                "Owner Charity #": owner.charity_number if owner else "",
-                "Relationship": ownership.ownership_type,
-                "Owned Entity": owned.resolved_name or owned.original_name if owned else "Unknown",
-                "Owned Charity #": owned.charity_number if owned else "",
-                "Owned Company #": owned.company_number if owned else "",
+                "Owner Name": sanitize_cell_value(owner.resolved_name or owner.original_name) if owner else "Unknown",
+                "Owner Charity #": sanitize_cell_value(owner.charity_number) if owner else "",
+                "Relationship": sanitize_cell_value(ownership.ownership_type),
+                "Owned Entity": sanitize_cell_value(owned.resolved_name or owned.original_name) if owned else "Unknown",
+                "Owned Charity #": sanitize_cell_value(owned.charity_number) if owned else "",
+                "Owned Company #": sanitize_cell_value(owned.company_number) if owned else "",
                 "Ownership %": f"{ownership.ownership_percentage:.1f}%" if ownership.ownership_percentage else "",
-                "Source": ownership.source,
+                "Source": sanitize_cell_value(ownership.source),
                 "Verified": "Yes" if ownership.verified else "No",
             })
         
@@ -371,9 +395,9 @@ class ExportService:
         for entity in entities:
             if entity.latest_income or entity.latest_expenditure:
                 data.append({
-                    "Name": entity.resolved_name or entity.original_name,
-                    "Charity Number": entity.charity_number,
-                    "Status": entity.charity_status,
+                    "Name": sanitize_cell_value(entity.resolved_name or entity.original_name),
+                    "Charity Number": sanitize_cell_value(entity.charity_number),
+                    "Status": sanitize_cell_value(entity.charity_status),
                     "Latest Income": entity.latest_income,
                     "Latest Expenditure": entity.latest_expenditure,
                     "Net Position": (entity.latest_income or 0) - (entity.latest_expenditure or 0),
@@ -449,19 +473,19 @@ class ExportService:
                 trustees = entity.enriched_data.get("trustees", [])
                 for trustee in trustees:
                     trustees_data.append({
-                        "Charity Name": entity.resolved_name or entity.original_name,
-                        "Charity Number": entity.charity_number,
-                        "Trustee Name": trustee.get("name", ""),
-                        "Trustee ID": trustee.get("id", ""),
+                        "Charity Name": sanitize_cell_value(entity.resolved_name or entity.original_name),
+                        "Charity Number": sanitize_cell_value(entity.charity_number),
+                        "Trustee Name": sanitize_cell_value(trustee.get("name", "")),
+                        "Trustee ID": sanitize_cell_value(trustee.get("id", "")),
                     })
-                
+
                 subsidiaries = entity.enriched_data.get("subsidiaries", [])
                 for sub in subsidiaries:
                     subsidiaries_data.append({
-                        "Charity Name": entity.resolved_name or entity.original_name,
-                        "Charity Number": entity.charity_number,
-                        "Subsidiary Name": sub.get("name", ""),
-                        "Company Number": sub.get("company_number", ""),
+                        "Charity Name": sanitize_cell_value(entity.resolved_name or entity.original_name),
+                        "Charity Number": sanitize_cell_value(entity.charity_number),
+                        "Subsidiary Name": sanitize_cell_value(sub.get("name", "")),
+                        "Company Number": sanitize_cell_value(sub.get("company_number", "")),
                     })
         
         # Write Trustees section
@@ -524,34 +548,35 @@ class ExportService:
             ws.column_dimensions[column].width = min(max_length + 2, 50)
     
     async def export_to_csv(self, batch_id: UUID) -> bytes:
-        """Export basic entity data to CSV."""
+        """Export basic entity data to CSV with formula injection protection."""
         result = await self.db.execute(
             select(Entity)
             .where(Entity.batch_id == batch_id)
             .order_by(Entity.row_number)
         )
         entities = result.scalars().all()
-        
+
         data = []
         for entity in entities:
             data.append({
                 "row_number": entity.row_number,
-                "original_name": entity.original_name,
-                "resolved_name": entity.resolved_name,
+                "original_name": sanitize_cell_value(entity.original_name),
+                "resolved_name": sanitize_cell_value(entity.resolved_name),
                 "entity_type": entity.entity_type.value if entity.entity_type else "",
-                "charity_number": entity.charity_number,
-                "company_number": entity.company_number,
-                "status": entity.charity_status,
+                "charity_number": sanitize_cell_value(entity.charity_number),
+                "company_number": sanitize_cell_value(entity.company_number),
+                "status": sanitize_cell_value(entity.charity_status),
                 "resolution_status": entity.resolution_status.value if entity.resolution_status else "",
                 "confidence": entity.resolution_confidence,
                 "income": entity.latest_income,
                 "expenditure": entity.latest_expenditure,
-                "website": entity.charity_website,
-                "email": entity.charity_contact_email,
+                "website": sanitize_cell_value(entity.charity_website),
+                "email": sanitize_cell_value(entity.charity_contact_email),
             })
-        
+
         df = pd.DataFrame(data)
         output = io.BytesIO()
-        df.to_csv(output, index=False)
+        # quoting=1 (QUOTE_ALL) wraps every field in double quotes for extra safety
+        df.to_csv(output, index=False, quoting=1)
         output.seek(0)
         return output.getvalue()

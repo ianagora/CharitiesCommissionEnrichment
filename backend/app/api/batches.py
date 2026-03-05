@@ -20,6 +20,7 @@ from app.services.ownership_builder import OwnershipTreeBuilder
 from app.api.deps import get_current_active_user
 from app.config import settings
 from app.utils.file_validation import validate_upload_file
+from app.utils.security import sanitize_string, sanitize_dict
 import structlog
 
 logger = structlog.get_logger()
@@ -119,11 +120,15 @@ async def create_batch(
             detail=f"Column '{name_column}' not found. Available columns: {available}",
         )
     
+    # Sanitise batch name and description to prevent XSS/injection
+    safe_name = sanitize_string(name, max_length=255)
+    safe_description = sanitize_string(description, max_length=1000) if description else None
+
     # Create batch
     batch = EntityBatch(
         user_id=current_user.id,
-        name=name,
-        description=description,
+        name=safe_name,
+        description=safe_description,
         original_filename=file.filename,
         status=BatchStatus.UPLOADED,
         total_records=len(df),
@@ -131,12 +136,15 @@ async def create_batch(
     db.add(batch)
     await db.flush()
     
-    # Create entities
+    # Create entities with input sanitisation
     for idx, row in df.iterrows():
         entity_name = str(row[name_column]).strip()
         if not entity_name or entity_name == 'nan':
             continue
-        
+
+        # Sanitise entity name to prevent stored XSS
+        entity_name = sanitize_string(entity_name, max_length=500)
+
         # Store all original data
         original_data = row.to_dict()
         # Convert any non-serializable values
@@ -145,7 +153,9 @@ async def create_batch(
                 original_data[key] = None
             elif hasattr(value, 'isoformat'):
                 original_data[key] = value.isoformat()
-        
+            elif isinstance(value, str):
+                original_data[key] = sanitize_string(value, max_length=10000)
+
         entity = Entity(
             batch_id=batch.id,
             original_name=entity_name,
