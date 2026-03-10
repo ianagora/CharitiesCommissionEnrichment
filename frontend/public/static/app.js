@@ -1226,12 +1226,19 @@ async function verify2FASetup() {
     
     try {
         await api.post('/auth/2fa/verify', { token: code });
-        
+
         const modal = document.getElementById('2fa-setup-wizard');
         if (modal) modal.remove();
-        
-        alert('✅ 2FA enabled successfully! You can now access the application.');
-        location.reload();
+
+        // Setup token is now invalidated server-side — clear client state and
+        // redirect to login so the user can authenticate with password + TOTP
+        // to obtain a full-scope token.
+        accessToken = null;
+        localStorage.removeItem('accessToken');
+        localStorage.removeItem('refreshToken');
+        alert('2FA enabled successfully! Please log in again with your password and authenticator code.');
+        showLanding();
+        showLogin();
     } catch (error) {
         alert(error.response?.data?.detail || 'Invalid verification code. Please try again.');
     }
@@ -1687,19 +1694,21 @@ window.handleAuth = async function(event) {
         let response;
         if (isLoginMode) {
             // Login
-            response = await axios.post(`${API_BASE}/auth/login`, { email, password });
+            response = await axios.post(`${API_BASE}/auth/login`, { email, password }, { withCredentials: true });
             accessToken = response.data.access_token;
-            refreshToken = response.data.refresh_token;
             localStorage.setItem('accessToken', accessToken);
-            localStorage.setItem('refreshToken', refreshToken);
-            
+
             closeAuthModal();
-            
-            // Check if 2FA is required
-            const needs2FA = await check2FARequired();
-            if (!needs2FA) {
-                await checkAuth();
+
+            // Check if server returned mfa_setup_required flag (restricted token)
+            if (response.data.mfa_setup_required) {
+                // Redirect straight to MFA setup — token is scoped, no refresh cookie
+                show2FAMandatorySetup();
+                return;
             }
+
+            // Full token issued — proceed to dashboard
+            await checkAuth();
         } else {
             // Register
             response = await axios.post(`${API_BASE}/auth/register`, {
@@ -1714,7 +1723,7 @@ window.handleAuth = async function(event) {
         }
     } catch (error) {
         if (error.response?.status === 403 && error.response?.headers?.['x-require-2fa']) {
-            // 2FA required
+            // 2FA required — user has MFA enabled, needs to provide TOTP
             const code = prompt('Enter your 6-digit 2FA code:');
             if (code) {
                 try {
@@ -1722,12 +1731,10 @@ window.handleAuth = async function(event) {
                         email,
                         password,
                         totp_code: code
-                    });
+                    }, { withCredentials: true });
                     accessToken = response.data.access_token;
-                    refreshToken = response.data.refresh_token;
                     localStorage.setItem('accessToken', accessToken);
-                    localStorage.setItem('refreshToken', refreshToken);
-                    
+
                     closeAuthModal();
                     await checkAuth();
                 } catch (error2) {

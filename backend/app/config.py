@@ -45,7 +45,8 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
-    
+    MFA_SETUP_TOKEN_EXPIRE_MINUTES: int = 10
+
     @field_validator("JWT_SECRET_KEY", mode="before")
     @classmethod
     def validate_jwt_secret(cls, v: str, info) -> str:

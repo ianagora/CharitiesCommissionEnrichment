@@ -246,9 +246,38 @@ async def login(
     # Update last login
     await AuthService.update_last_login(db, user)
 
-    # Create tokens with rotation (new token family for fresh login)
+    # Branch: issue restricted setup token if MFA not yet enabled
+    if not user.two_factor_enabled:
+        # Issue a short-lived, restricted token for MFA setup only — NO refresh token
+        setup_token = AuthService.create_mfa_setup_token(
+            user.id, user.email, user.token_version or 0,
+        )
+
+        # Create audit log
+        audit_log = AuditLog(
+            user_id=user.id,
+            action=AuditAction.LOGIN,
+            description="User logged in - MFA setup required (restricted token issued)",
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent"),
+            endpoint=str(request.url.path),
+            method=request.method,
+        )
+        db.add(audit_log)
+
+        # Explicitly clear any stale refresh cookie
+        clear_refresh_token_cookie(response)
+
+        return JSONResponse(content={
+            "access_token": setup_token,
+            "token_type": "bearer",
+            "expires_in": settings.MFA_SETUP_TOKEN_EXPIRE_MINUTES * 60,
+            "mfa_setup_required": True,
+        })
+
+    # MFA already enabled and verified — issue full token + refresh cookie
     access_token, refresh_token, _ = await AuthService.rotate_refresh_token(db, user)
-    
+
     # Create audit log
     audit_log = AuditLog(
         user_id=user.id,
@@ -260,11 +289,11 @@ async def login(
         method=request.method,
     )
     db.add(audit_log)
-    
+
     # Set refresh token in httpOnly cookie (secure, not accessible by JS)
     cookie_max_age = settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
     set_refresh_token_cookie(response, refresh_token, cookie_max_age)
-    
+
     # Return only access token in response body
     return Token(
         access_token=access_token,

@@ -42,10 +42,11 @@ class AuthService:
         email: str,
         is_superuser: bool = False,
         token_version: int = 0,
+        scope: str = "full",
     ) -> str:
         """
         Create a JWT access token.
-        
+
         The token includes a version number that must match the user's
         current token_version for the token to be valid.
         """
@@ -57,6 +58,33 @@ class AuthService:
             "exp": expire,
             "type": "access",
             "ver": token_version,  # Token version for invalidation
+            "scope": scope,
+        }
+        return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+    @classmethod
+    def create_mfa_setup_token(
+        cls,
+        user_id: UUID,
+        email: str,
+        token_version: int = 0,
+    ) -> str:
+        """
+        Create a restricted, short-lived token for MFA setup only.
+
+        This token has scope="mfa_setup", is_superuser=False, and a short
+        expiry (MFA_SETUP_TOKEN_EXPIRE_MINUTES). No refresh token is issued
+        alongside this token.
+        """
+        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.MFA_SETUP_TOKEN_EXPIRE_MINUTES)
+        to_encode = {
+            "sub": str(user_id),
+            "email": email,
+            "is_superuser": False,
+            "exp": expire,
+            "type": "access",
+            "ver": token_version,
+            "scope": "mfa_setup",
         }
         return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
     
@@ -113,6 +141,8 @@ class AuthService:
             if user_id is None:
                 return None
             
+            scope = payload.get("scope", "full")  # Default "full" for backward compat
+
             return TokenData(
                 user_id=UUID(user_id),
                 email=email,
@@ -120,6 +150,7 @@ class AuthService:
                 token_version=token_version,
                 token_family=token_family,
                 token_jti=token_jti,
+                scope=scope,
             )
         except JWTError:
             return None
@@ -322,12 +353,13 @@ class AuthService:
         """
         token_version = user.token_version or 0
         
-        # Create new access token
+        # Create new access token (always full scope for refresh rotation)
         access_token = cls.create_access_token(
             user.id,
             user.email,
             user.is_superuser,
             token_version,
+            scope="full",
         )
         
         # Create new refresh token (same family if rotating, new family if fresh login)

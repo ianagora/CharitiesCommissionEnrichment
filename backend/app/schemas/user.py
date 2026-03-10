@@ -114,6 +114,7 @@ class TokenData(BaseModel):
     token_version: Optional[int] = None
     token_family: Optional[str] = None
     token_jti: Optional[str] = None  # Unique token ID for refresh token validation
+    scope: Optional[str] = None  # Token scope: "full" or "mfa_setup"
 
 
 class PasswordChange(BaseModel):

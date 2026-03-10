@@ -141,16 +141,22 @@ async def verify_and_enable_2fa(
     current_user.two_factor_secret = pending_setup["secret"]
     current_user.backup_codes = pending_setup["backup_codes_json"]
     current_user.two_factor_enabled = True
+
+    # Invalidate all tokens (including the mfa_setup token) so the user
+    # must re-login with credentials + TOTP to obtain a full-scope token.
+    current_user.invalidate_all_tokens()
+
     await db.commit()
-    
+
     # Clear pending setup from memory
     del _pending_2fa_setups[user_id_str]
-    
-    logger.info("2FA enabled", user_id=str(current_user.id), email=current_user.email)
-    
+
+    logger.info("2FA enabled - all tokens invalidated, re-login required",
+                user_id=str(current_user.id), email=current_user.email)
+
     return TwoFactorVerifyResponse(
         success=True,
-        message="Two-factor authentication has been successfully enabled"
+        message="Two-factor authentication enabled. Please log in again with your password and authenticator code."
     )
 
 

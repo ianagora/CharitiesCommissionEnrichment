@@ -49,11 +49,13 @@ async def get_current_user(
         HTTPException: If authentication fails
     """
     user = None
+    token_scope = "full"  # Default scope (used for API key auth)
 
     # Try JWT token first
     if credentials:
         token_data = AuthService.decode_token(credentials.credentials)
         if token_data and token_data.user_id:
+            token_scope = token_data.scope or "full"
             user = await AuthService.get_user_by_id(db, token_data.user_id)
             if user and user.is_active:
                 # Verify token version matches (for logout/password change invalidation)
@@ -80,6 +82,7 @@ async def get_current_user(
         user = await AuthService.get_user_by_api_key(db, api_key)
         if user and not user.is_active:
             user = None
+        token_scope = "full"  # API keys always have full scope
 
     if not user:
         raise HTTPException(
@@ -88,13 +91,25 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Enforce mandatory 2FA: users who have not completed 2FA setup are
-    # restricted to 2FA-related endpoints only. This prevents the bypass where
-    # a token issued at first login (before 2FA enrolment) grants full access.
+    # Enforce token scope: mfa_setup tokens can ONLY access 2FA exempt paths
     request_path = request.url.path
-    if not user.two_factor_enabled and request_path not in TWO_FACTOR_EXEMPT_PATHS:
+    if token_scope == "mfa_setup" and request_path not in TWO_FACTOR_EXEMPT_PATHS:
         logger.warning(
-            "Access blocked - 2FA setup not completed",
+            "Access blocked - mfa_setup scoped token used on restricted path",
+            user_id=str(user.id),
+            path=request_path,
+            scope=token_scope,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Two-factor authentication setup is required before accessing this resource.",
+            headers={"X-Require-2FA-Setup": "true"},
+        )
+
+    # Defense-in-depth: even with a full-scope token, block if 2FA not enabled
+    if token_scope == "full" and not user.two_factor_enabled and request_path not in TWO_FACTOR_EXEMPT_PATHS:
+        logger.warning(
+            "Access blocked - 2FA setup not completed (defense-in-depth)",
             user_id=str(user.id),
             path=request_path,
         )
