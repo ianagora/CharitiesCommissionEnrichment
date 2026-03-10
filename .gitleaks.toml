@@ -1,0 +1,19 @@
+# Gitleaks configuration - allow known placeholder/example secrets
+# These are not real credentials, they are example values in .env.example
+# and default fallbacks in code that are overridden by environment variables.
+
+[allowlist]
+description = "Allow placeholder and example secrets"
+
+# Placeholder OpenAI key in .env.example
+# Placeholder JWT secret in .env.example
+# Default dev DB password in code
+paths = [
+    '''\.env\.example$''',
+]
+
+regexes = [
+    '''sk-your-openai-api-key''',
+    '''your-super-secret-key-change-in-production''',
+    '''tx_password''',
+]
