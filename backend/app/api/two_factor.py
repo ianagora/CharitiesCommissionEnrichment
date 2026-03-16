@@ -39,10 +39,8 @@ class TwoFactorDisableRequest(BaseModel):
     token: str  # Either TOTP token or backup code
 
 
-# In-memory storage for pending 2FA setups (secret stored only until verified)
-# In production, consider using Redis with TTL for distributed deployments
-_pending_2fa_setups: dict = {}
-PENDING_2FA_EXPIRY_MINUTES = 10
+# Import shared pending setup storage from service layer
+from app.services.two_factor import pending_2fa_setups as _pending_2fa_setups, PENDING_2FA_EXPIRY_MINUTES
 
 
 @router.post("/2fa/setup", response_model=TwoFactorSetupResponse)

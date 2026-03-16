@@ -11,6 +11,11 @@ let currentBatchId = null;
 let currentPage = 1;
 let isLoginMode = true;
 
+// Temporary in-memory storage for credentials during MFA setup flow.
+// Cleared immediately after MFA verification completes or on page unload.
+let _pendingMfaEmail = null;
+let _pendingMfaPassword = null;
+
 // CSRF token helper - read from cookie set by backend
 function getCSRFToken() {
     const match = document.cookie.match(/csrf_token=([^;]+)/);
@@ -1098,10 +1103,15 @@ async function check2FARequired() {
         const response = await api.get('/auth/2fa/status');
         const userResponse = await api.get('/auth/me');
         currentUser = userResponse.data;
-        
-        // If 2FA is not enabled and not in setup, force setup
-        if (!response.data.enabled && !window.location.hash.includes('2fa-setup')) {
-            show2FAMandatorySetup();
+
+        // Defence-in-depth: if somehow a token exists but MFA is not enabled,
+        // clear the token and force re-login (the login flow will handle MFA setup).
+        if (!response.data.enabled) {
+            accessToken = null;
+            localStorage.removeItem('accessToken');
+            localStorage.removeItem('refreshToken');
+            showLanding();
+            showLogin();
             return true;
         }
         return false;
@@ -1111,45 +1121,9 @@ async function check2FARequired() {
     }
 }
 
-// Show mandatory 2FA setup modal
-function show2FAMandatorySetup() {
-    const modal = document.createElement('div');
-    modal.id = '2fa-mandatory-modal';
-    modal.className = 'fixed inset-0 bg-black/70 flex items-center justify-center z-50';
-    modal.innerHTML = `
-        <div class="bg-white rounded-xl p-8 max-w-md w-full mx-4 card-shadow">
-            <div class="text-center mb-6">
-                <div class="mx-auto w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4">
-                    <i class="fas fa-shield-alt text-red-600 text-2xl"></i>
-                </div>
-                <h2 class="text-2xl font-bold text-gray-800">Two-Factor Authentication Required</h2>
-                <p class="text-gray-600 mt-2">For security, all users must enable 2FA to continue.</p>
-            </div>
-            <button onclick="initiate2FASetup()" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-medium transition">
-                <i class="fas fa-lock mr-2"></i>Set Up 2FA Now
-            </button>
-            <p class="text-center text-sm text-gray-500 mt-4">You cannot access the application without 2FA.</p>
-        </div>
-    `;
-    document.body.appendChild(modal);
-}
 
-// Initiate 2FA setup
-async function initiate2FASetup() {
-    try {
-        const response = await api.post('/auth/2fa/setup');
-        const { qr_code, backup_codes } = response.data;
-        
-        show2FASetupWizard(qr_code, backup_codes);
-    } catch (error) {
-        alert(error.response?.data?.detail || 'Failed to initiate 2FA setup');
-    }
-}
-
-// Show 2FA setup wizard
+// Show 2FA setup wizard (called directly from login response — no token exists yet)
 function show2FASetupWizard(qrCode, backupCodes) {
-    const existingModal = document.getElementById('2fa-mandatory-modal');
-    if (existingModal) existingModal.remove();
     
     const modal = document.createElement('div');
     modal.id = '2fa-setup-wizard';
@@ -1215,30 +1189,44 @@ function copyBackupCodes(codes) {
     });
 }
 
-// Verify and enable 2FA
+// Verify and enable 2FA by re-authenticating with credentials + TOTP.
+// No token exists at this point — the login endpoint verifies the TOTP against
+// the pending setup, enables MFA, and issues a full token in one step.
 async function verify2FASetup() {
     const code = document.getElementById('2fa-verify-code').value;
-    
+
     if (!code || code.length !== 6) {
         alert('Please enter a 6-digit code');
         return;
     }
-    
+
+    if (!_pendingMfaEmail || !_pendingMfaPassword) {
+        alert('Session expired. Please log in again.');
+        showLanding();
+        showLogin();
+        return;
+    }
+
     try {
-        await api.post('/auth/2fa/verify', { token: code });
+        const response = await axios.post(`${API_BASE}/auth/login`, {
+            email: _pendingMfaEmail,
+            password: _pendingMfaPassword,
+            totp_code: code,
+        }, { withCredentials: true });
+
+        // Clear temporary credentials immediately
+        _pendingMfaEmail = null;
+        _pendingMfaPassword = null;
+
+        // Full token issued — MFA is now enabled
+        accessToken = response.data.access_token;
+        localStorage.setItem('accessToken', accessToken);
 
         const modal = document.getElementById('2fa-setup-wizard');
         if (modal) modal.remove();
 
-        // Setup token is now invalidated server-side — clear client state and
-        // redirect to login so the user can authenticate with password + TOTP
-        // to obtain a full-scope token.
-        accessToken = null;
-        localStorage.removeItem('accessToken');
-        localStorage.removeItem('refreshToken');
-        alert('2FA enabled successfully! Please log in again with your password and authenticator code.');
-        showLanding();
-        showLogin();
+        alert('2FA enabled successfully!');
+        await checkAuth();
     } catch (error) {
         alert(error.response?.data?.detail || 'Invalid verification code. Please try again.');
     }
@@ -1605,10 +1593,10 @@ async function load2FAStatus() {
                     <div class="bg-red-50 border border-red-200 rounded-lg p-4">
                         <p class="text-sm text-red-700 font-medium mb-3">
                             <i class="fas fa-exclamation-triangle mr-2"></i>
-                            2FA is mandatory. Please set it up now.
+                            2FA is mandatory. Please log in again to complete setup.
                         </p>
-                        <button onclick="initiate2FASetup()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
-                            <i class="fas fa-lock mr-2"></i>Set Up 2FA
+                        <button onclick="logout()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
+                            <i class="fas fa-sign-in-alt mr-2"></i>Log In to Set Up 2FA
                         </button>
                     </div>
                 `}
@@ -1629,11 +1617,13 @@ async function disable2FA() {
     
     try {
         await api.post('/auth/2fa/disable', { password, token });
-        alert('✅ 2FA disabled successfully. You must enable it again immediately.');
-        load2FAStatus();
-        
-        // Force re-setup
-        setTimeout(() => initiate2FASetup(), 1000);
+        // 2FA disabled — force re-login so the login flow triggers MFA setup
+        accessToken = null;
+        localStorage.removeItem('accessToken');
+        localStorage.removeItem('refreshToken');
+        alert('2FA disabled. You must log in again to re-enable it.');
+        showLanding();
+        showLogin();
     } catch (error) {
         alert(error.response?.data?.detail || 'Failed to disable 2FA');
     }
@@ -1695,19 +1685,23 @@ window.handleAuth = async function(event) {
         if (isLoginMode) {
             // Login
             response = await axios.post(`${API_BASE}/auth/login`, { email, password }, { withCredentials: true });
+
+            if (response.data.mfa_setup_required) {
+                // No token issued — server returned QR code and backup codes for
+                // first-time MFA setup.  Store credentials temporarily in memory
+                // so we can re-authenticate with TOTP after the user completes setup.
+                _pendingMfaEmail = email;
+                _pendingMfaPassword = password;
+                closeAuthModal();
+                show2FASetupWizard(response.data.qr_code, response.data.backup_codes);
+                return;
+            }
+
+            // Full token issued — MFA already enabled and verified
             accessToken = response.data.access_token;
             localStorage.setItem('accessToken', accessToken);
 
             closeAuthModal();
-
-            // Check if server returned mfa_setup_required flag (restricted token)
-            if (response.data.mfa_setup_required) {
-                // Redirect straight to MFA setup — token is scoped, no refresh cookie
-                show2FAMandatorySetup();
-                return;
-            }
-
-            // Full token issued — proceed to dashboard
             await checkAuth();
         } else {
             // Register
@@ -1717,8 +1711,8 @@ window.handleAuth = async function(event) {
                 full_name: fullName,
                 organization: organization
             });
-            
-            alert('✅ Registration successful! Please login.');
+
+            alert('Registration successful! Please login.');
             showLogin();
         }
     } catch (error) {
@@ -1753,7 +1747,7 @@ window.handleAuth = async function(event) {
             } else if (error.response?.status === 400) {
                 errorMsg = error.response?.data?.detail || 'Bad request. Please check your input.';
             } else if (!error.response) {
-                errorMsg = '❌ Cannot connect to server. Please check:\n\n1. Backend is running at: ' + API_BASE + '\n2. CORS is properly configured\n3. Your internet connection\n\nTry again in a few moments.';
+                errorMsg = 'Cannot connect to server. Please check:\n\n1. Backend is running at: ' + API_BASE + '\n2. CORS is properly configured\n3. Your internet connection\n\nTry again in a few moments.';
             }
             alert(errorMsg);
         }
@@ -1780,6 +1774,21 @@ console.log('✅ app.js fully loaded - real functions now active');
 
 // Check 2FA on page load
 document.addEventListener('DOMContentLoaded', () => {
+    // Check if init.js stored pending MFA setup data (fallback path)
+    const pendingSetup = sessionStorage.getItem('pendingMfaSetup');
+    if (pendingSetup) {
+        sessionStorage.removeItem('pendingMfaSetup');
+        try {
+            const data = JSON.parse(pendingSetup);
+            _pendingMfaEmail = data.email;
+            _pendingMfaPassword = data.password;
+            show2FASetupWizard(data.qr_code, data.backup_codes);
+            return;
+        } catch (e) {
+            console.error('Failed to parse pending MFA setup data:', e);
+        }
+    }
+
     if (accessToken) {
         check2FARequired().then(needs2FA => {
             if (!needs2FA) {

@@ -7,6 +7,14 @@ import secrets
 import json
 from typing import Optional, List, Tuple
 
+# Shared in-memory storage for pending 2FA setups (secret stored only until verified).
+# In production, consider using Redis with TTL for distributed deployments.
+# Keys are user ID strings; values contain secret, backup_codes_json, and expires_at.
+pending_2fa_setups: dict = {}
+
+# How long a pending 2FA setup remains valid before it must be restarted.
+PENDING_2FA_EXPIRY_MINUTES = 10
+
 
 class TwoFactorService:
     """Service for handling 2FA operations."""

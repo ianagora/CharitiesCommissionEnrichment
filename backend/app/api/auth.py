@@ -17,6 +17,7 @@ from app.schemas.user import (
 )
 from app.services.auth import AuthService
 from app.services.rate_limit import login_rate_limiter
+from app.services.two_factor import TwoFactorService, pending_2fa_setups, PENDING_2FA_EXPIRY_MINUTES
 from app.api.deps import get_current_active_user
 from app.config import settings
 from app.utils.security import sanitize_string
@@ -185,9 +186,6 @@ async def login(
                 headers={"X-Require-2FA": "true"},
             )
 
-        # Import here to avoid circular dependency
-        from app.services.two_factor import TwoFactorService
-
         # Try TOTP first
         totp_valid = TwoFactorService.verify_totp(
             user.two_factor_secret,
@@ -235,7 +233,85 @@ async def login(
                 detail="Invalid 2FA code",
             )
 
-    # Successful login - clear any failed attempts
+    elif not login_data.totp_code:
+        # MFA NOT enabled and no TOTP code provided — return setup data with
+        # NO token.  The user must complete MFA setup and re-authenticate with
+        # credentials + TOTP to obtain a token.
+        from datetime import timedelta
+
+        await login_rate_limiter.record_successful_login(login_data.email, client_ip)
+
+        setup_data = TwoFactorService.setup_2fa(user.email)
+        pending_2fa_setups[str(user.id)] = {
+            "secret": setup_data["secret"],
+            "backup_codes_json": setup_data["backup_codes_json"],
+            "expires_at": datetime.now(timezone.utc) + timedelta(minutes=PENDING_2FA_EXPIRY_MINUTES),
+        }
+
+        audit_log = AuditLog(
+            user_id=user.id,
+            action=AuditAction.LOGIN,
+            description="User authenticated - MFA setup required (no token issued)",
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent"),
+            endpoint=str(request.url.path),
+            method=request.method,
+        )
+        db.add(audit_log)
+        await db.commit()
+
+        clear_refresh_token_cookie(response)
+
+        return JSONResponse(content={
+            "mfa_setup_required": True,
+            "qr_code": setup_data["qr_code"],
+            "backup_codes": setup_data["backup_codes"],
+        })
+
+    else:
+        # MFA NOT enabled but TOTP code provided — verify against pending setup,
+        # enable MFA on the account, then fall through to issue a full token.
+        user_id_str = str(user.id)
+        pending = pending_2fa_setups.get(user_id_str)
+
+        if not pending:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No pending 2FA setup. Please log in without a TOTP code first to start setup.",
+            )
+
+        if datetime.now(timezone.utc) > pending["expires_at"]:
+            del pending_2fa_setups[user_id_str]
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="2FA setup has expired. Please log in again to restart setup.",
+            )
+
+        if not TwoFactorService.verify_totp(pending["secret"], login_data.totp_code):
+            logger.warning(
+                "Invalid 2FA code during MFA setup verification",
+                user_id=user_id_str,
+                email=user.email,
+                ip=client_ip,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid 2FA code",
+            )
+
+        # Verification successful — enable MFA on the account
+        user.two_factor_secret = pending["secret"]
+        user.backup_codes = pending["backup_codes_json"]
+        user.two_factor_enabled = True
+        del pending_2fa_setups[user_id_str]
+
+        logger.info(
+            "2FA enabled via login flow",
+            user_id=user_id_str,
+            email=user.email,
+        )
+
+    # === Full authentication successful — issue tokens ===
     await login_rate_limiter.record_successful_login(login_data.email, client_ip)
 
     # Invalidate all existing sessions before creating new tokens
@@ -246,36 +322,7 @@ async def login(
     # Update last login
     await AuthService.update_last_login(db, user)
 
-    # Branch: issue restricted setup token if MFA not yet enabled
-    if not user.two_factor_enabled:
-        # Issue a short-lived, restricted token for MFA setup only — NO refresh token
-        setup_token = AuthService.create_mfa_setup_token(
-            user.id, user.email, user.token_version or 0,
-        )
-
-        # Create audit log
-        audit_log = AuditLog(
-            user_id=user.id,
-            action=AuditAction.LOGIN,
-            description="User logged in - MFA setup required (restricted token issued)",
-            ip_address=client_ip,
-            user_agent=request.headers.get("user-agent"),
-            endpoint=str(request.url.path),
-            method=request.method,
-        )
-        db.add(audit_log)
-
-        # Explicitly clear any stale refresh cookie
-        clear_refresh_token_cookie(response)
-
-        return JSONResponse(content={
-            "access_token": setup_token,
-            "token_type": "bearer",
-            "expires_in": settings.MFA_SETUP_TOKEN_EXPIRE_MINUTES * 60,
-            "mfa_setup_required": True,
-        })
-
-    # MFA already enabled and verified — issue full token + refresh cookie
+    # Issue full token + refresh cookie
     access_token, refresh_token, _ = await AuthService.rotate_refresh_token(db, user)
 
     # Create audit log

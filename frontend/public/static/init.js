@@ -139,10 +139,28 @@ window.handleAuth = async function(event) {
             // Login
             console.log('Logging in with:', email);
             const response = await axios.post(API_BASE + '/auth/login', { email, password }, { withCredentials: true });
+
+            if (response.data.mfa_setup_required) {
+                // No token issued — MFA setup required.
+                // If app.js is loaded it will handle the setup wizard via its own
+                // handleAuth.  As a fallback, store setup data in sessionStorage
+                // and reload so app.js can pick it up.
+                console.log('MFA setup required — deferring to app.js');
+                sessionStorage.setItem('pendingMfaSetup', JSON.stringify({
+                    qr_code: response.data.qr_code,
+                    backup_codes: response.data.backup_codes,
+                    email: email,
+                    password: password,
+                }));
+                window.closeAuthModal();
+                window.location.reload();
+                return;
+            }
+
             accessToken = response.data.access_token;
             refreshToken = response.data.refresh_token;
             localStorage.setItem('accessToken', accessToken);
-            localStorage.setItem('refreshToken', refreshToken);
+            if (refreshToken) localStorage.setItem('refreshToken', refreshToken);
             console.log('Login successful');
         } else {
             // Register
@@ -150,36 +168,69 @@ window.handleAuth = async function(event) {
             const full_name = document.getElementById('full_name').value;
             const organization = document.getElementById('organization');
             const orgValue = organization ? organization.value : null;
-            
-            await axios.post(API_BASE + '/auth/register', { 
-                email, 
-                password, 
+
+            await axios.post(API_BASE + '/auth/register', {
+                email,
+                password,
                 full_name,
                 organization: orgValue
             }, { withCredentials: true });
             console.log('Registration successful, now logging in...');
-            
+
             // Auto-login after registration
             const response = await axios.post(API_BASE + '/auth/login', { email, password }, { withCredentials: true });
+
+            if (response.data.mfa_setup_required) {
+                // New registration — MFA setup required, no token issued.
+                sessionStorage.setItem('pendingMfaSetup', JSON.stringify({
+                    qr_code: response.data.qr_code,
+                    backup_codes: response.data.backup_codes,
+                    email: email,
+                    password: password,
+                }));
+                window.closeAuthModal();
+                window.location.reload();
+                return;
+            }
+
             accessToken = response.data.access_token;
             refreshToken = response.data.refresh_token;
             localStorage.setItem('accessToken', accessToken);
-            localStorage.setItem('refreshToken', refreshToken);
+            if (refreshToken) localStorage.setItem('refreshToken', refreshToken);
             console.log('Auto-login successful');
         }
-        
+
         window.closeAuthModal();
-        
+
         // Reload page to initialize app.js with authentication
         console.log('Reloading page to load dashboard...');
         window.location.reload();
-        
+
     } catch (error) {
         console.error('Auth error:', error);
         console.error('Error details:', error.response ? error.response.data : 'No response');
-        
+
         let errorMsg = 'Authentication failed';
-        
+
+        if (error.response && error.response.status === 403 && error.response.headers && error.response.headers['x-require-2fa']) {
+            // 2FA already enabled — prompt for code
+            const code = prompt('Enter your 6-digit 2FA code:');
+            if (code) {
+                try {
+                    const r = await axios.post(API_BASE + '/auth/login', {
+                        email, password, totp_code: code
+                    }, { withCredentials: true });
+                    accessToken = r.data.access_token;
+                    localStorage.setItem('accessToken', accessToken);
+                    window.closeAuthModal();
+                    window.location.reload();
+                } catch (e2) {
+                    alert(e2.response?.data?.detail || 'Invalid 2FA code');
+                }
+            }
+            return;
+        }
+
         if (error.response && error.response.data && error.response.data.detail) {
             errorMsg = error.response.data.detail;
         } else if (error.response && error.response.status === 401) {
@@ -194,7 +245,7 @@ window.handleAuth = async function(event) {
         } else if (!error.response) {
             errorMsg = 'Cannot connect to server. Please check your connection.';
         }
-        
+
         alert(errorMsg);
     }
 };

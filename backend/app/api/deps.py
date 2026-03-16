@@ -19,10 +19,9 @@ bearer_scheme = HTTPBearer(auto_error=False)
 api_key_header = APIKeyHeader(name=settings.API_KEY_HEADER, auto_error=False)
 
 # Endpoints that are exempt from mandatory 2FA enforcement.
-# These are the minimum set needed for a user to complete 2FA setup or log out.
+# MFA setup now happens during login (no token issued until MFA is complete),
+# so only status, profile, and logout need exemptions for defence-in-depth.
 TWO_FACTOR_EXEMPT_PATHS = {
-    "/api/v1/auth/2fa/setup",
-    "/api/v1/auth/2fa/verify",
     "/api/v1/auth/2fa/status",
     "/api/v1/auth/me",
     "/api/v1/auth/logout",
@@ -91,23 +90,11 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Enforce token scope: mfa_setup tokens can ONLY access 2FA exempt paths
+    # Defense-in-depth: block access if 2FA is not enabled, regardless of token scope.
+    # MFA setup now happens during login (no token is issued until MFA is complete),
+    # so this should not trigger in normal operation — it catches edge cases only.
     request_path = request.url.path
-    if token_scope == "mfa_setup" and request_path not in TWO_FACTOR_EXEMPT_PATHS:
-        logger.warning(
-            "Access blocked - mfa_setup scoped token used on restricted path",
-            user_id=str(user.id),
-            path=request_path,
-            scope=token_scope,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Two-factor authentication setup is required before accessing this resource.",
-            headers={"X-Require-2FA-Setup": "true"},
-        )
-
-    # Defense-in-depth: even with a full-scope token, block if 2FA not enabled
-    if token_scope == "full" and not user.two_factor_enabled and request_path not in TWO_FACTOR_EXEMPT_PATHS:
+    if not user.two_factor_enabled and request_path not in TWO_FACTOR_EXEMPT_PATHS:
         logger.warning(
             "Access blocked - 2FA setup not completed (defense-in-depth)",
             user_id=str(user.id),

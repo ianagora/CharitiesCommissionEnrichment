@@ -63,32 +63,6 @@ class AuthService:
         return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
     @classmethod
-    def create_mfa_setup_token(
-        cls,
-        user_id: UUID,
-        email: str,
-        token_version: int = 0,
-    ) -> str:
-        """
-        Create a restricted, short-lived token for MFA setup only.
-
-        This token has scope="mfa_setup", is_superuser=False, and a short
-        expiry (MFA_SETUP_TOKEN_EXPIRE_MINUTES). No refresh token is issued
-        alongside this token.
-        """
-        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.MFA_SETUP_TOKEN_EXPIRE_MINUTES)
-        to_encode = {
-            "sub": str(user_id),
-            "email": email,
-            "is_superuser": False,
-            "exp": expire,
-            "type": "access",
-            "ver": token_version,
-            "scope": "mfa_setup",
-        }
-        return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
-    
-    @classmethod
     def create_refresh_token(
         cls,
         user_id: UUID,
